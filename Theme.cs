@@ -52,6 +52,19 @@ static class Ui
         c.Disposed += (_, _) => Changed -= Handler;
     }
 
+    /// <summary>The three looks people can pick in Settings.</summary>
+    public enum Look { Windows11, Windows10, Glass }
+
+    public static Look Style { get; private set; } =
+        Enum.TryParse<Look>(Settings.Current.Theme, out var look) ? look : Look.Windows11;
+
+    public static void SetStyle(Look style)
+    {
+        Style = style;
+        Load();
+        Changed?.Invoke();
+    }
+
     static Ui()
     {
         Load();
@@ -77,11 +90,13 @@ static class Ui
         using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
             Dark = _forced ?? (k?.GetValue("AppsUseLightTheme") is int v && v == 0);
 
-        Color accentDark1 = Hex(0x005FB8), accentLight2 = Hex(0x99EBFF), accentLight3 = Hex(0xC0F0FF), accentDark2 = Hex(0x004C87);
+        Color accent = Hex(0x0078D4), accentLight1 = Hex(0x4CC2FF), accentDark1 = Hex(0x005FB8), accentLight2 = Hex(0x99EBFF), accentLight3 = Hex(0xC0F0FF), accentDark2 = Hex(0x004C87);
         try
         {
             var ui = new UISettings();
             static Color C(Windows.UI.Color c) => Color.FromArgb(c.R, c.G, c.B);
+            accent = C(ui.GetColorValue(UIColorType.Accent));
+            accentLight1 = C(ui.GetColorValue(UIColorType.AccentLight1));
             accentDark1 = C(ui.GetColorValue(UIColorType.AccentDark1));
             accentDark2 = C(ui.GetColorValue(UIColorType.AccentDark2));
             accentLight2 = C(ui.GetColorValue(UIColorType.AccentLight2));
@@ -108,17 +123,70 @@ static class Ui
             AccentText = accentDark2;
             Error = Hex(0xC42B1C); Success = Hex(0x0F7B0F);
         }
+
+        if (Style == Look.Windows10)
+        {
+            // Windows 10: flat, square, the accent colour used as is with white text.
+            if (Dark)
+            {
+                Flyout = Hex(0x1F1F1F); Base = Hex(0x171717); Card = Hex(0x262626); CardStroke = Hex(0x262626);
+                Divider = Hex(0x333333); SubtleHover = Hex(0x333333); ControlFill = Hex(0x333333); ControlHover = Hex(0x404040);
+                ControlStroke = Hex(0x555555); AccentText = accentLight1;
+            }
+            else
+            {
+                Flyout = Hex(0xF2F2F2); Base = Hex(0xE6E6E6); Card = Hex(0xFFFFFF); CardStroke = Hex(0xFFFFFF);
+                Divider = Hex(0xD9D9D9); SubtleHover = Hex(0xDADADA); ControlFill = Hex(0xFFFFFF); ControlHover = Hex(0xF0F0F0);
+                ControlStroke = Hex(0xBFBFBF); AccentText = accentDark1;
+            }
+            Accent = accent;
+            AccentHover = Blend(accent, Color.White, 0.15);
+            TextOnAccent = Color.White;
+        }
+        else if (Style == Look.Glass)
+        {
+            // Glass: frosted surfaces over a blurred view of what's behind, translucent layers on top.
+            static Color A(int a, Color c) => Color.FromArgb(a, c);
+            if (Dark)
+            {
+                Flyout = Hex(0x1C1D27); Base = Hex(0x15161F); Card = A(22, Color.White); CardStroke = A(40, Color.White);
+                Divider = A(34, Color.White); SubtleHover = A(30, Color.White); SubtlePressed = A(20, Color.White);
+                ControlFill = A(24, Color.White); ControlHover = A(40, Color.White); ControlStroke = A(52, Color.White); StrongStroke = A(170, Color.White);
+                Text = Hex(0xFFFFFF); TextSecondary = Hex(0xCDD0DC); TextTertiary = Hex(0x9A9EB0);
+                Accent = accentLight1; AccentHover = accentLight2; AccentText = accentLight2; TextOnAccent = Hex(0x0B0C10);
+            }
+            else
+            {
+                Flyout = Hex(0xF3F4F9); Base = Hex(0xEBEDF4); Card = A(150, Color.White); CardStroke = A(200, Color.White);
+                Divider = A(28, Color.Black); SubtleHover = A(16, Color.Black); SubtlePressed = A(10, Color.Black);
+                ControlFill = A(160, Color.White); ControlHover = A(210, Color.White); ControlStroke = A(36, Color.Black); StrongStroke = A(130, Color.Black);
+                Text = Hex(0x10121A); TextSecondary = Hex(0x484C5A); TextTertiary = Hex(0x787D8E);
+                Accent = accentDark1; AccentHover = Blend(accentDark1, Color.White, 0.15); AccentText = accentDark2; TextOnAccent = Color.White;
+            }
+        }
     }
+
+    /// <summary>The panel's footer bar: a darker band, or a frosted one on Glass.</summary>
+    public static Color Footer => Style == Look.Glass
+        ? (Dark ? Color.FromArgb(70, 0, 0, 0) : Color.FromArgb(110, 255, 255, 255))
+        : Base;
+
+    public static Color Blend(Color a, Color b, double t) => Color.FromArgb(
+        (int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+
+    /// <summary>A translucent colour flattened onto the page, for controls that can't be see-through (text boxes).</summary>
+    public static Color Solid(Color c) => c.A == 255 ? c : Blend(Base, Color.FromArgb(c.R, c.G, c.B), c.A / 255.0);
 
     // ---- type ramp (Windows 11: Caption 12, Body 14, Subtitle 20, Title 28 px) ----
 
     static readonly HashSet<string> Families = new(FontFamily.Families.Select(f => f.Name));
     static string Pick(params string[] names) => names.FirstOrDefault(Families.Contains) ?? "Segoe UI";
-    static readonly string TextFace = Pick("Segoe UI Variable Text", "Segoe UI");
-    static readonly string TextStrongFace = Pick("Segoe UI Variable Text Semibold", "Segoe UI Semibold");
-    static readonly string DisplayFace = Pick("Segoe UI Variable Display Semib", "Segoe UI Semibold");
-    static readonly string SmallFace = Pick("Segoe UI Variable Small", "Segoe UI");
-    static readonly string IconFace = Pick("Segoe Fluent Icons", "Segoe MDL2 Assets");
+    static bool Classic => Style == Look.Windows10;
+    static string TextFace => Classic ? "Segoe UI" : Pick("Segoe UI Variable Text", "Segoe UI");
+    static string TextStrongFace => Classic ? "Segoe UI Semibold" : Pick("Segoe UI Variable Text Semibold", "Segoe UI Semibold");
+    static string DisplayFace => Classic ? "Segoe UI Light" : Pick("Segoe UI Variable Display Semib", "Segoe UI Semibold");
+    static string SmallFace => Classic ? "Segoe UI" : Pick("Segoe UI Variable Small", "Segoe UI");
+    static string IconFace => Classic ? Pick("Segoe MDL2 Assets", "Segoe Fluent Icons") : Pick("Segoe Fluent Icons", "Segoe MDL2 Assets");
 
     static readonly Dictionary<(string, float), Font> Fonts = [];
     static Font Get(string face, float pt)
@@ -219,8 +287,25 @@ static class Ui
         return p;
     }
 
+    /// <summary>
+    /// Corner radius for the current look: square on Windows 10, extra round on Glass.
+    /// Pills (radius = half the height) stay pills everywhere.
+    /// </summary>
+    public static float Radius(RectangleF r, float radius)
+    {
+        var pill = radius >= Math.Min(r.Width, r.Height) / 2f - 0.5f;
+        if (pill || radius <= 0) return radius;
+        return Style switch
+        {
+            Look.Windows10 => 0,
+            Look.Glass => Math.Min(radius * 2.5f, Math.Min(r.Width, r.Height) / 2f),
+            _ => radius,
+        };
+    }
+
     public static void FillRound(Graphics g, Color c, RectangleF r, float radius)
     {
+        radius = Radius(r, radius);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using var b = new SolidBrush(c);
         using var p = Round(r, radius);
@@ -229,6 +314,7 @@ static class Ui
 
     public static void StrokeRound(Graphics g, Color c, RectangleF r, float radius, float width = 1)
     {
+        radius = Radius(r, radius);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using var pen = new Pen(c, width);
         using var p = Round(r, radius);
@@ -264,7 +350,7 @@ static class Ui
     /// <summary>Windows 11 rounded corners (small = menus/tooltips radius) and border colour.</summary>
     public static void Chrome(IntPtr hwnd, bool round = true, bool small = false)
     {
-        var pref = !round ? 1 : small ? 3 : 2; // DONOTROUND / ROUNDSMALL / ROUND
+        var pref = !round || Style == Look.Windows10 ? 1 : small ? 3 : 2; // DONOTROUND / ROUNDSMALL / ROUND
         try { DwmSetWindowAttribute(hwnd, 33, ref pref, sizeof(int)); } catch { }
         var dark = Dark ? 1 : 0;
         try { DwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int)); } catch { }   // immersive dark mode
@@ -303,6 +389,16 @@ abstract class Drawn : Control
     protected float Scale_ => DeviceDpi / 96f;
     protected int S(int v) => (int)Math.Round(v * DeviceDpi / 96.0);
     protected Color Surface => Parent is Drawn d ? d.BackFill : Parent?.BackColor ?? Ui.Base;
+
+    /// <summary>
+    /// Paints what's behind this control. Translucent looks (Glass) ask the parent to
+    /// draw its own background here; opaque ones just fill the parent's colour.
+    /// </summary>
+    protected void PaintBack(Graphics g)
+    {
+        if (Surface.A < 255 || Ui.Style == Ui.Look.Glass) ButtonRenderer.DrawParentBackground(g, ClientRectangle, this);
+        else g.Clear(Surface);
+    }
     /// <summary>Colour children paint behind themselves.</summary>
     public virtual Color BackFill => Surface;
 
@@ -338,7 +434,7 @@ sealed class PillButton : Drawn
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Surface);
+        PaintBack(g);
         var r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
         var radius = 4 * Scale_;
         if (Primary)
@@ -370,7 +466,7 @@ sealed class LinkText : Drawn
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.Clear(Surface);
+        PaintBack(e.Graphics);
         Ui.DrawText(e.Graphics, Text, Ui.Body, ClientRectangle, !Enabled ? Ui.TextTertiary : Pressed ? Ui.TextSecondary : Ui.AccentText);
         if (Hot && Enabled)
         {

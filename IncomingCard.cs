@@ -108,7 +108,14 @@ sealed class IncomingCard : Form
         var m = S(12);
         Bounds = new Rectangle(st.Right ? wa.Right - w - m : wa.Left + m, st.Bottom ? wa.Bottom - y - m : wa.Top + m, w, y);
         _close = new Rectangle(w - S(40), S(8), S(32), S(32));
-        if (!Visible) Show();
+        if (!Visible)
+        {
+            // Glass: blur what's behind, with room for the card to grow while it's open.
+            var room = S(640);
+            Effects.Capture(this, new Rectangle(Left, st.Bottom ? Bottom - room : Top, Width, room));
+            Show();
+            Effects.Show(this, st.Bottom ? S(12) : -S(12));
+        }
         Ui.KeepOnTop(Handle);
         Invalidate();
     }
@@ -116,7 +123,7 @@ sealed class IncomingCard : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Ui.Flyout);
+        Effects.PaintSurface(g, this, Ui.Flyout);
         int w = ClientSize.Width, pad = S(Pad);
 
         // Notification header: app icon and name, close button.

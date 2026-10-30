@@ -12,7 +12,16 @@ sealed class SettingsForm : Form
         ("all", "Accept everything", "Anyone on this network can send you files"),
     ];
 
+    static readonly (Ui.Look Look, string Title, string Sub)[] Looks =
+    [
+        (Ui.Look.Windows11, "Windows 11", "Rounded, light or dark, your accent colour"),
+        (Ui.Look.Windows10, "Windows 10", "Square, flat and quiet"),
+        (Ui.Look.Glass, "Glass", "Frosted see-through panels and smooth animations"),
+    ];
+
     readonly ScrollPanel _scroll = new();
+    readonly List<RadioRow> _looks = [];
+    readonly Ui.Look _originalLook = Ui.Style;
     readonly TextField _name = new();
     readonly PillButton _browse = new("Browse");
     readonly List<RadioRow> _modes = [];
@@ -101,6 +110,19 @@ sealed class SettingsForm : Form
         _scroll.Add(new Card("Send what you copied", Key("Ctrl + Alt + S", Program.Shortcuts.Clipboard)));
         _scroll.Add(new Card("Send a screenshot", Key("Ctrl + Alt + Shift + S", Program.Shortcuts.Screenshot)));
 
+        _scroll.Add(new SectionHeader("Look"));
+        foreach (var l in Looks)
+        {
+            var row = new RadioRow(l.Title, l.Sub) { Selected = l.Look == Ui.Style };
+            row.Click += (_, _) =>
+            {
+                foreach (var r in _looks) r.Selected = r == row;
+                Ui.SetStyle(l.Look);   // preview straight away; Cancel puts it back
+            };
+            _looks.Add(row);
+        }
+        _scroll.Add(new Card("Theme", null, below: [.. _looks]));
+
         _scroll.Add(new SectionHeader("General"));
         _scroll.Add(new Card("Sound", "Play a sound when someone sends you something", right: _sound, rightWidth: 84));
         _scroll.Add(new Card("Start with Windows", "Keep the drop zone ready after you sign in", right: _autostart, rightWidth: 84));
@@ -144,6 +166,7 @@ sealed class SettingsForm : Form
         _close = new Rectangle(w - S(52), S(16), S(36), S(36));
         Location = new Point(wa.Left + (wa.Width - Width) / 2, wa.Top + (wa.Height - Height) / 2);
         Ui.ThemeScrollbars(_scroll);
+        Effects.Show(this, S(10));
     }
 
     void TrySave()
@@ -210,6 +233,13 @@ sealed class SettingsForm : Form
     public bool DoNotDisturb => _quiet.Checked;
     public bool AutoQuiet => _autoQuiet.Checked;
     public bool ForgetTrusted { get; private set; }
+    public string Theme => Looks[Math.Max(0, _looks.FindIndex(r => r.Selected))].Look.ToString();
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        if (DialogResult != DialogResult.OK && Ui.Style != _originalLook) Ui.SetStyle(_originalLook);
+        base.OnFormClosed(e);
+    }
 }
 
 /// <summary>Vertical stack of section headers and cards that scrolls.</summary>
@@ -336,7 +366,7 @@ sealed class TextField : Drawn
 
     void Recolor()
     {
-        var bg = _box.Focused ? (Ui.Dark ? Ui.Flyout : Color.White) : Ui.ControlFill;
+        var bg = Ui.Solid(_box.Focused ? (Ui.Dark ? Ui.Flyout : Color.White) : Ui.ControlFill);
         if (_box.BackColor != bg) _box.BackColor = bg;
         if (_box.ForeColor != Ui.Text) _box.ForeColor = Ui.Text;
     }
@@ -358,7 +388,7 @@ sealed class TextField : Drawn
     {
         Recolor();
         var g = e.Graphics;
-        g.Clear(Surface);
+        PaintBack(g);
         var r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
         var radius = 4 * Scale_;
         Ui.FillRound(g, _box.BackColor, r, radius);
@@ -393,7 +423,7 @@ sealed class RadioRow : Drawn
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Surface);
+        PaintBack(g);
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         var size = S(20);
         var dot = new Rectangle(0, S(6), size, size);
@@ -437,7 +467,7 @@ sealed class ToggleSwitch : Drawn
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Surface);
+        PaintBack(g);
         var track = new RectangleF(Width - S(40) - 0.5f, (Height - S(20)) / 2f, S(40), S(20));
         Ui.DrawText(g, _checked ? "On" : "Off", Ui.Body, new Rectangle(0, 0, (int)track.Left - S(12), Height), Ui.Text,
             TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
@@ -533,7 +563,7 @@ sealed class CornerPicker : Drawn
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Surface);
+        PaintBack(g);
         if (_boxes.Count == 0) LayoutBoxes();
 
         foreach (var (screen, box, _) in _boxes)

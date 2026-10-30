@@ -74,6 +74,8 @@ sealed class Settings
         System.Windows.Forms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == Monitor) ?? System.Windows.Forms.Screen.PrimaryScreen!;
     public bool Sound { get; set; } = true;
     public bool AutoUpdate { get; set; } = true;
+    /// <summary>Windows11, Windows10 or Glass.</summary>
+    public string Theme { get; set; } = "Windows11";
     /// <summary>Decline incoming transfers (they're listed in Recent).</summary>
     public bool DoNotDisturb { get; set; }
     /// <summary>Also be quiet while presenting or running something fullscreen.</summary>

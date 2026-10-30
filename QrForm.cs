@@ -66,6 +66,7 @@ sealed class QrForm : Form
         _close = new Rectangle(w - S(48), S(16), S(32), S(32));
         var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
         Location = new Point(wa.Left + (wa.Width - w) / 2, wa.Top + (wa.Height - h) / 2);
+        Effects.Show(this, S(10));
     }
 
     protected override CreateParams CreateParams

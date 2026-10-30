@@ -230,8 +230,17 @@ sealed class DropPanel : Form
         Ui.Chrome(Handle);
         _devices = Ordered();
         _recent = History.Latest(5).ToList();
+        if (opening)
+        {
+            // Glass: blur whatever the panel is about to cover (its whole column, it may grow).
+            var wa = Settings.Current.TargetScreen.WorkingArea;
+            var w = S(Width_);
+            var x = Settings.Current.Right ? wa.Right - w - S(12) : wa.Left + S(12);
+            Effects.Capture(this, new Rectangle(x, wa.Top, w, wa.Height));
+        }
         Measure();
         Ui.KeepOnTop(Handle);
+        if (opening) Effects.Show(this, Settings.Current.Bottom ? S(12) : -S(12));
         _leaveTimer.Start();
         Invalidate();
 
@@ -358,7 +367,7 @@ sealed class DropPanel : Form
             g.Clear(Ui.Accent);
             return;
         }
-        g.Clear(Ui.Flyout);
+        Effects.PaintSurface(g, this, Ui.Flyout);
         int w = ClientSize.Width, pad = S(16);
 
         // Header: what you're holding, or what to do.
@@ -387,7 +396,7 @@ sealed class DropPanel : Form
 
         // Footer bar, like Quick Settings: who you are, refresh, settings.
         var fy = ClientSize.Height - S(FooterH);
-        using (var b = new SolidBrush(Ui.Base)) g.FillRectangle(b, 0, fy, w, S(FooterH));
+        using (var b = new SolidBrush(Ui.Footer)) g.FillRectangle(b, 0, fy, w, S(FooterH));
         using (var line = new Pen(Ui.Divider)) g.DrawLine(line, 0, fy, w, fy);
         var footer = _refreshing ? "Searching for devices…"
             : Settings.Current.DoNotDisturb ? "Do not disturb is on"

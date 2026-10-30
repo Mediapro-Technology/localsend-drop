@@ -278,6 +278,7 @@ static class Program
             s.AutoUpdate = f.AutoUpdate;
             s.DoNotDisturb = f.DoNotDisturb;
             s.AutoQuiet = f.AutoQuiet;
+            s.Theme = f.Theme;
             quiet.Checked = s.DoNotDisturb;
             if (f.ForgetTrusted) s.Trusted.Clear();
             s.Save();

@@ -13,10 +13,12 @@ static class Snapshot
     {
         ApplicationConfiguration.Initialize();
         Directory.CreateDirectory(folder);
+        foreach (var style in Enum.GetValues<Ui.Look>())
         foreach (var dark in new[] { false, true })
         {
+            Ui.SetStyle(style);
             Ui.Force(dark);
-            var mode = dark ? "dark" : "light";
+            var mode = $"{style}-{(dark ? "dark" : "light")}";
             var id = Identity.LoadOrCreate();
             using var discovery = new Discovery(id);
             discovery.Upsert(new DeviceInfo { Alias = "HARSHID-PC", DeviceModel = "Windows", DeviceType = "desktop", Fingerprint = "A1" }, IPAddress.Loopback);

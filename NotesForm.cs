@@ -71,6 +71,7 @@ sealed class NotesForm : Form
         var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
         Location = new Point(wa.Left + (wa.Width - w) / 2, wa.Top + (wa.Height - h) / 2);
         _view.Reload();
+        Effects.Show(this, S(10));
     }
 
     protected override void OnShown(EventArgs e)
