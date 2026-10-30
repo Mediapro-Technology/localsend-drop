@@ -187,10 +187,11 @@ sealed class Mouth : Form
     /// <param name="center">Middle of the body; the corner default is just inside (0,0).</param>
     /// <param name="angle">Which way it faces, in degrees: 45 out of a corner, 90 down from the top edge.</param>
     /// <param name="face">Size of the eyes and mouth relative to the body (bigger on the snake's small head).</param>
-    public static void Paint(Graphics g, float s, Pose p, PointF? center = null, float angle = 45, float face = 1)
+    /// <param name="color">Body colour; your accent colour unless it's a colleague's creature.</param>
+    public static void Paint(Graphics g, float s, Pose p, PointF? center = null, float angle = 45, float face = 1, Color? color = null)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var body = Ui.Solid(Ui.Accent);
+        var body = color ?? Ui.Solid(Ui.Accent);
         var dark = Ui.Blend(body, Color.Black, 0.55);
         var k = 8 * s;
         var r = (float)((34 + 12 * p.Open) * s * (1 + p.Squash));
@@ -303,28 +304,7 @@ sealed class Mouth : Form
     }
 
     /// <summary>Puts a frame on screen at <paramref name="at"/> (the window takes the bitmap's size).</summary>
-    void Present(Bitmap bmp, Point at)
-    {
-        var screenDc = GetDC(IntPtr.Zero);
-        var memDc = CreateCompatibleDC(screenDc);
-        var hbmp = bmp.GetHbitmap(Color.FromArgb(0));
-        var old = SelectObject(memDc, hbmp);
-        try
-        {
-            var dst = new POINT { X = at.X, Y = at.Y };
-            var sz = new SIZE { cx = bmp.Width, cy = bmp.Height };
-            var src = new POINT();
-            var blend = new BLENDFUNCTION { BlendOp = 0, SourceConstantAlpha = 255, AlphaFormat = 1 /*AC_SRC_ALPHA*/ };
-            UpdateLayeredWindow(Handle, screenDc, ref dst, ref sz, memDc, ref src, 0, ref blend, 2 /*ULW_ALPHA*/);
-        }
-        finally
-        {
-            SelectObject(memDc, old);
-            DeleteObject(hbmp);
-            DeleteDC(memDc);
-            ReleaseDC(IntPtr.Zero, screenDc);
-        }
-    }
+    void Present(Bitmap bmp, Point at) => Layered.Present(Handle, bmp, at);
 
     // ---- mouse and drops ----
 
@@ -573,7 +553,7 @@ sealed class Mouth : Form
     {
         base.OnMouseEnter(e);
         // The top edge is where browser tabs live: open only if the mouse stays a moment.
-        if (Settings.Current.Center) _want.Start();
+        if (Settings.Current.Center) { _want.Interval = 350; _want.Start(); }
         else Wanted?.Invoke();
     }
 
@@ -590,6 +570,8 @@ sealed class Mouth : Form
         e.Effect = files ? DragDropEffects.Copy : DragDropEffects.None;
         _openTarget = 1;
         _tick.Start();
+        if (Settings.Current.OpenDelay <= 0) { Wanted?.Invoke(); return; }
+        _want.Interval = Settings.Current.OpenDelay;
         _want.Start();
     }
 
@@ -629,6 +611,33 @@ sealed class Mouth : Form
             _want.Dispose();
         }
         base.Dispose(disposing);
+    }
+}
+
+/// <summary>Puts a per-pixel-alpha frame on a layered window (WS_EX_LAYERED), moving and sizing it to match.</summary>
+static class Layered
+{
+    public static void Present(IntPtr hwnd, Bitmap bmp, Point at)
+    {
+        var screenDc = GetDC(IntPtr.Zero);
+        var memDc = CreateCompatibleDC(screenDc);
+        var hbmp = bmp.GetHbitmap(Color.FromArgb(0));
+        var old = SelectObject(memDc, hbmp);
+        try
+        {
+            var dst = new POINT { X = at.X, Y = at.Y };
+            var sz = new SIZE { cx = bmp.Width, cy = bmp.Height };
+            var src = new POINT();
+            var blend = new BLENDFUNCTION { BlendOp = 0, SourceConstantAlpha = 255, AlphaFormat = 1 /*AC_SRC_ALPHA*/ };
+            UpdateLayeredWindow(hwnd, screenDc, ref dst, ref sz, memDc, ref src, 0, ref blend, 2 /*ULW_ALPHA*/);
+        }
+        finally
+        {
+            SelectObject(memDc, old);
+            DeleteObject(hbmp);
+            DeleteDC(memDc);
+            ReleaseDC(IntPtr.Zero, screenDc);
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }

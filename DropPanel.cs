@@ -58,7 +58,7 @@ sealed class DropPanel : Form
     /// <summary>Device menu: open the conversation, or ask for a file.</summary>
     public Action<Device>? OpenNotes, AskForFile;
     /// <summary>Device menu: wave at it.</summary>
-    public Action<Device>? Wave;
+    public Action<Device>? Wave, ShowScreen;
 
     /// <summary>Something is arriving: the little mouth brings it in. False if there's no mouth to show it.</summary>
     public bool Arrive(Image? food)
@@ -884,6 +884,11 @@ sealed class DropPanel : Form
         menu.Items.Add("Ask for a file…", null, (_, _) => BeginInvoke(() => AskForFile?.Invoke(d)));
         menu.Items.Add("Send a link…", null, (_, _) => BeginInvoke(() => SendLink(d)));
         menu.Items.Add("Wave", null, (_, _) => Wave?.Invoke(d));
+        menu.Items.Add(ScreenShare.Active ? "Stop showing my screen" : "Show my screen", null, (_, _) =>
+        {
+            if (ScreenShare.Active) ScreenShare.Stop();
+            else BeginInvoke(() => ShowScreen?.Invoke(d));
+        });
         menu.Items.Add(new ToolStripSeparator());
         var groups = new ToolStripMenuItem("Groups");
         for (var gi = 0; gi < s.Groups.Count; gi++)
@@ -1043,9 +1048,14 @@ sealed class DropPanel : Form
         _dragData = e.Data;
         if (!_expanded)
         {
-            e.Effect = _dragHasFiles ? DragDropEffects.Copy : DragDropEffects.None;
-            _openDelay.Start();
-            return;
+            if (Settings.Current.OpenDelay <= 0) Expand(false);
+            else
+            {
+                e.Effect = _dragHasFiles ? DragDropEffects.Copy : DragDropEffects.None;
+                _openDelay.Interval = Settings.Current.OpenDelay;
+                _openDelay.Start();
+                return;
+            }
         }
         Measure();
         Summarize(e.Data);

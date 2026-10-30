@@ -21,6 +21,9 @@ sealed class DeviceInfo
     public bool Download { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? Announce { get; set; }
+    /// <summary>LocalSend Drop: the sender's little mouth colour ("#rrggbb"), so it can visit the receiver's screen.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Creature { get; set; }
 }
 
 sealed class Device
@@ -235,6 +238,7 @@ static class Sender
             {
                 Alias = id.Alias, DeviceModel = "Windows", DeviceType = "desktop",
                 Fingerprint = id.Fingerprint, Port = ourPort, Protocol = "https",
+                Creature = Settings.Current.ZoneStyle == "Mouth" ? ColorTranslator.ToHtml(Ui.Solid(Ui.Accent)) : null,
             },
             files,
         };

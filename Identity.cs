@@ -78,6 +78,8 @@ sealed class Settings
     public string Theme { get; set; } = "Windows11";
     /// <summary>The corner when the panel is closed: "Strip" (thin accent line) or "Mouth".</summary>
     public string ZoneStyle { get; set; } = "Strip";
+    /// <summary>How long (ms) to hold a file at the drop zone before the panel opens; dropped sooner, it goes on the shelf. 0 = right away.</summary>
+    public int OpenDelay { get; set; } = 600;
     /// <summary>Decline incoming transfers (they're listed in Recent).</summary>
     public bool DoNotDisturb { get; set; }
     /// <summary>Also be quiet while presenting or running something fullscreen.</summary>

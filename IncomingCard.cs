@@ -33,6 +33,8 @@ sealed class IncomingCard : Form
     public Action<FileRequest>? AnswerRequest;
     /// <summary>"Wave back" on a wave: fingerprint, alias.</summary>
     public Action<string, string>? WaveBack;
+    /// <summary>"Watch" on a screen offer.</summary>
+    public Action<ScreenOffer>? WatchScreen;
 
     public IncomingCard()
     {
@@ -336,6 +338,19 @@ sealed class IncomingCard : Form
         _caption = "Choose what to send. It goes straight to them.";
         Arrange("Choose file", "Decline");
         _onPrimary = () => { Hide(); AnswerRequest?.Invoke(req); };
+        _onSecondary = Hide;
+        if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
+    }
+
+    public void OnScreenOffer(string alias, ScreenOffer offer)
+    {
+        _session = null;
+        Reset();
+        _title = $"{alias} wants to show you their screen";
+        _lines = [];
+        _caption = "View only. They can stop at any time.";
+        Arrange("Watch", "Not now");
+        _onPrimary = () => { Hide(); WatchScreen?.Invoke(offer); };
         _onSecondary = Hide;
         if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
     }

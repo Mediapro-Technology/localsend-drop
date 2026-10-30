@@ -154,7 +154,7 @@ static class Snapshot
             {
                 settings.Show();
                 Save(settings, Path.Combine(folder, $"settings-{mode}.png"));
-                settings.Controls.OfType<ScrollPanel>().First().AutoScrollPosition = new Point(0, 100_000);
+                settings.Controls.OfType<ScrollPanel>().First().ScrollTo(100_000);
                 settings.Refresh();
                 Save(settings, Path.Combine(folder, $"settings-bottom-{mode}.png"));
             }
@@ -190,6 +190,30 @@ static class Snapshot
         Console.WriteLine(QrShare.Url(share));
         Console.Out.Flush();
         Thread.Sleep(45_000);
+        server.DisposeAsync().AsTask().Wait(2000);
+        return 0;
+    }
+
+    /// <summary>`--screen-test <png>`: shares this screen, watches it from the same PC over HTTPS, saves what arrived.</summary>
+    public static int ScreenTest(string output)
+    {
+        ApplicationConfiguration.Initialize();
+        var id = Identity.LoadOrCreate();
+        using var discovery = new Discovery(id);
+        var server = new Server(id, discovery);
+        server.StartAsync().GetAwaiter().GetResult();
+        var area = Screen.PrimaryScreen!.Bounds;
+        var token = ScreenShare.Start(id.Fingerprint, "this PC", area);
+        using var viewer = new ScreenViewer(new ScreenOffer("Test", id.Fingerprint, "127.0.0.1", server.Port, token), id) { Opacity = 0 };
+        viewer.Show();
+        var until = Environment.TickCount64 + 4000;
+        while (Environment.TickCount64 < until) { Application.DoEvents(); Thread.Sleep(20); }
+        Console.WriteLine($"watching while open: {ScreenShare.Watching}");
+        Save(viewer, output);
+        viewer.Close();
+        until = Environment.TickCount64 + 1500;
+        while (Environment.TickCount64 < until) { Application.DoEvents(); Thread.Sleep(20); }
+        Console.WriteLine($"still sharing after the viewer closed: {ScreenShare.Active}");
         server.DisposeAsync().AsTask().Wait(2000);
         return 0;
     }

@@ -16,6 +16,7 @@ static class Program
         if (args.Length == 2 && args[0] == "--snapshot") return Snapshot.Run(args[1]);
         if (args.Length >= 2 && args[0] == "--qr-serve") return Snapshot.QrServe(args[1..]);
         if (args.Length == 1 && args[0] == "--qr-inbox") return Snapshot.QrInbox();
+        if (args.Length == 2 && args[0] == "--screen-test") return Snapshot.ScreenTest(args[1]);
         if (args.Length == 3 && args[0] == "--send") return SendCli(args[1], args[2]);
 
         // Explorer's "Send with LocalSend Drop" passes: --share "<path>"
@@ -126,9 +127,15 @@ static class Program
                 });
                 return false;
             }
-            // The little mouth brings it in first.
+            // Their little mouth hops over to hand it in; or ours brings it.
             var food = Thumbs.FromDataUri(r.Files.FirstOrDefault(f => f.Thumbnail != null)?.Thumbnail);
-            if (panel.Invoke(() => panel.Arrive(food))) await Task.Delay(900, ct);
+            if (r.SenderCreature is { } colour)
+            {
+                var who = panel.Find(r.SenderFingerprint) is { } sender ? DropPanel.DisplayName(sender) : r.SenderAlias;
+                panel.Invoke(() => Visitor.Play(colour, who, food));
+                await Task.Delay(1500, ct);
+            }
+            else if (panel.Invoke(() => panel.Arrive(food))) await Task.Delay(900, ct);
             var trusted = r.SenderFingerprint.Length > 0 && s.Trusted.Contains(r.SenderFingerprint);
             if (s.ReceiveMode == "all" || (s.ReceiveMode == "known" && trusted))
             {
@@ -276,6 +283,25 @@ static class Program
             panel.Waved();
             card.OnWave(panel.Find(fingerprint) is { } d ? DropPanel.DisplayName(d) : alias, fingerprint);
         });
+        // ---- showing your screen ----
+        panel.ShowScreen = async d =>
+        {
+            var name = DropPanel.DisplayName(d);
+            var area = Screen.FromPoint(Cursor.Position).Bounds;
+            var token = ScreenShare.Start(d.Fingerprint, name, area);
+            var error = await ScreenShare.OfferAsync(id, discovery.HttpPort, d, token);
+            if (error != null)
+            {
+                ScreenShare.Stop();
+                Notify($"Couldn't show your screen to {name}: {error}", true);
+                return;
+            }
+            new SharingBar(area).Show();
+        };
+        server.ScreenOffered += offer => card.BeginInvoke(() =>
+            card.OnScreenOffer(panel.Find(offer.Fingerprint) is { } d ? DropPanel.DisplayName(d) : offer.Alias, offer));
+        card.WatchScreen = offer => new ScreenViewer(offer, id).Show();
+
         card.WaveBack = (fingerprint, alias) =>
         {
             if (panel.Find(fingerprint) is { } d) panel.Wave?.Invoke(d);
@@ -323,6 +349,7 @@ static class Program
             s.AutoQuiet = f.AutoQuiet;
             s.Theme = f.Theme;
             s.ZoneStyle = f.ZoneStyle;
+            s.OpenDelay = f.OpenDelay;
             quiet.Checked = s.DoNotDisturb;
             if (f.ForgetTrusted) s.Trusted.Clear();
             s.Save();

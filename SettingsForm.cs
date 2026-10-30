@@ -26,6 +26,14 @@ sealed class SettingsForm : Form
     ];
 
     readonly List<RadioRow> _zones = [];
+    static readonly (int Ms, string Title, string Sub)[] Delays =
+    [
+        (0, "Right away", "The panel opens as soon as a file arrives"),
+        (300, "After 0.3 seconds", "Quick drops go on the shelf"),
+        (600, "After 0.6 seconds", "Default"),
+        (1000, "After 1 second", "More time to toss several files onto the shelf"),
+    ];
+    readonly List<RadioRow> _delays = [];
     readonly ScrollPanel _scroll = new();
     readonly List<RadioRow> _looks = [];
     readonly Ui.Look _originalLook = Ui.Style;
@@ -118,6 +126,14 @@ sealed class SettingsForm : Form
             _zones.Add(row);
         }
         _scroll.Add(new Card("Style", "How the corner looks while the panel is closed", below: [.. _zones]));
+        var current = Delays.MinBy(x => Math.Abs(x.Ms - s.OpenDelay));
+        foreach (var delay in Delays)
+        {
+            var row = new RadioRow(delay.Title, delay.Sub) { Selected = delay.Ms == current.Ms };
+            row.Click += (_, _) => { foreach (var r in _delays) r.Selected = r == row; };
+            _delays.Add(row);
+        }
+        _scroll.Add(new Card("Open the panel", "When you hold a file at the drop zone. Drop it sooner and it goes on the shelf.", below: [.. _delays]));
 
         _scroll.Add(new SectionHeader("Shortcuts"));
         static string Key(string keys, bool ok) => ok ? keys : $"{keys} (another app is using it)";
@@ -158,7 +174,7 @@ sealed class SettingsForm : Form
             _scroll.Add(new Card("Install LocalSend Drop", "Adds it to the Start menu and the right-click menu", right: _install, rightWidth: 112));
 
         Controls.AddRange([_scroll, _save, _cancel]);
-        Ui.OnChange(this, () => { BackColor = Ui.Base; Ui.Chrome(Handle); Ui.ThemeScrollbars(_scroll); Invalidate(true); });
+        Ui.OnChange(this, () => { BackColor = Ui.Base; Ui.Chrome(Handle); Invalidate(true); });
     }
 
     int S(int v) => LogicalToDeviceUnits(v);
@@ -175,11 +191,11 @@ sealed class SettingsForm : Form
         var h = Math.Min(S(HeaderH) + content + S(FooterH), Math.Min(S(820), wa.Height - S(48)));
         ClientSize = new Size(w, h);
         _scroll.Height = h - S(HeaderH) - S(FooterH);
+        _scroll.LayoutCards();
         _save.SetBounds(w - pad - S(120), h - S(FooterH) + S(24), S(120), S(32));
         _cancel.SetBounds(w - pad - S(248), h - S(FooterH) + S(24), S(120), S(32));
         _close = new Rectangle(w - S(52), S(16), S(36), S(36));
         Location = new Point(wa.Left + (wa.Width - Width) / 2, wa.Top + (wa.Height - Height) / 2);
-        Ui.ThemeScrollbars(_scroll);
         Effects.Show(this, S(10));
     }
 
@@ -247,6 +263,7 @@ sealed class SettingsForm : Form
     public bool DoNotDisturb => _quiet.Checked;
     public bool AutoQuiet => _autoQuiet.Checked;
     public bool ForgetTrusted { get; private set; }
+    public int OpenDelay => Delays[Math.Max(0, _delays.FindIndex(r => r.Selected))].Ms;
     public string ZoneStyle => Zones[Math.Max(0, _zones.FindIndex(r => r.Selected))].Key;
     public string Theme => Looks[Math.Max(0, _looks.FindIndex(r => r.Selected))].Look.ToString();
 
@@ -258,34 +275,168 @@ sealed class SettingsForm : Form
 }
 
 /// <summary>Vertical stack of section headers and cards that scrolls.</summary>
-sealed class ScrollPanel : Panel
+sealed class ScrollPanel : Panel, IMessageFilter
 {
     readonly List<Control> _items = [];
+    readonly ScrollThumb _thumb;
+    readonly System.Windows.Forms.Timer _hover = new() { Interval = 120 };
+    int _offset, _content;
 
     public ScrollPanel()
     {
-        AutoScroll = true;
         DoubleBuffered = true;
         BackColor = Ui.Base;
         Ui.OnChange(this, () => BackColor = Ui.Base);
+        _thumb = new ScrollThumb(this) { Visible = false };
+        Controls.Add(_thumb);
+        // Like Windows 11: the scrollbar only shows while the mouse is over the list.
+        _hover.Tick += (_, _) =>
+        {
+            var show = _content > ClientSize.Height && IsHandleCreated && ClientRectangle.Contains(PointToClient(Cursor.Position));
+            if (show || !_thumb.Dragging) _thumb.Visible = show || _thumb.Dragging;
+        };
+        HandleCreated += (_, _) => { Application.AddMessageFilter(this); _hover.Start(); };
+        HandleDestroyed += (_, _) => { Application.RemoveMessageFilter(this); _hover.Stop(); };
     }
 
-    public void Add(Control c) { _items.Add(c); Controls.Add(c); }
+    public void Add(Control c)
+    {
+        _items.Add(c);
+        Controls.Add(c);
+        _thumb.BringToFront();
+        c.Enter += (_, _) => ScrollIntoView(c);   // tabbing to a card off screen brings it into view
+    }
+
+    public int Offset => _offset;
+    public int Content => _content;
 
     /// <summary>Stacks the items (4 px between cards, like Windows Settings); returns the content height.</summary>
     public int LayoutCards()
     {
         int S(int v) => LogicalToDeviceUnits(v);
-        var w = ClientSize.Width - S(8) - SystemInformation.VerticalScrollBarWidth;
+        var w = ClientSize.Width - S(8) - S(8);   // room on the right for the thin scrollbar
         var y = 0;
         foreach (var c in _items)
         {
             var h = c is Card card ? card.Measure(w) : S(40);
             if (c is SectionHeader && y > 0) y += S(16);
-            c.SetBounds(S(4), y, w, h);
+            c.SetBounds(S(4), y - _offset, w, h);
+            c.Tag = y;
             y += h + (c is Card ? S(4) : 0);
         }
-        return y + S(8);
+        _content = y + S(8);
+        _thumb.Place();
+        return _content;
+    }
+
+    public void ScrollTo(int offset)
+    {
+        var max = Math.Max(0, _content - ClientSize.Height);
+        offset = Math.Clamp(offset, 0, max);
+        if (offset == _offset) return;
+        var delta = _offset - offset;
+        _offset = offset;
+        SuspendLayout();
+        foreach (var c in _items) c.Top += delta;
+        ResumeLayout(false);
+        _thumb.Place();
+        Update();
+    }
+
+    void ScrollIntoView(Control c)
+    {
+        if (c.Top < 0) ScrollTo(_offset + c.Top);
+        else if (c.Bottom > ClientSize.Height) ScrollTo(_offset + c.Bottom - ClientSize.Height);
+    }
+
+    protected override void OnResize(EventArgs e) { base.OnResize(e); ScrollTo(_offset); _thumb.Place(); }
+
+    // The wheel goes to whatever card is under the mouse; scroll the list instead.
+    public bool PreFilterMessage(ref Message m)
+    {
+        const int WM_MOUSEWHEEL = 0x020A;
+        if (m.Msg != WM_MOUSEWHEEL || !Visible || !IsHandleCreated) return false;
+        if (!ClientRectangle.Contains(PointToClient(Cursor.Position))) return false;
+        var delta = (short)((long)m.WParam >> 16);
+        ScrollTo(_offset - delta * LogicalToDeviceUnits(48) / 120);
+        return true;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _hover.Dispose();
+        base.Dispose(disposing);
+    }
+}
+
+/// <summary>The thin overlay scrollbar: a line that thickens under the mouse and can be dragged.</summary>
+sealed class ScrollThumb : Drawn
+{
+    readonly ScrollPanel _owner;
+    int _grabY, _grabOffset;
+    public bool Dragging { get; private set; }
+
+    public ScrollThumb(ScrollPanel owner) { _owner = owner; Cursor = Cursors.Default; }
+
+    public void Place()
+    {
+        var h = _owner.ClientSize.Height;
+        if (_owner.Content <= h) { Visible = false; return; }
+        SetBounds(_owner.ClientSize.Width - S(12), 0, S(12), h);
+        Invalidate();
+    }
+
+    Rectangle Thumb()
+    {
+        var h = Height;
+        var len = Math.Max(S(32), (int)((long)h * h / Math.Max(1, _owner.Content)));
+        var travel = h - len;
+        var max = Math.Max(1, _owner.Content - h);
+        return new Rectangle(0, (int)((long)travel * _owner.Offset / max), Width, len);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(Ui.Base);
+        var t = Thumb();
+        var wide = Hot || Dragging;
+        var w = wide ? S(6) : S(2);
+        var r = new Rectangle(Width - S(3) - w, t.Top + S(2), w, t.Height - S(4));
+        Ui.FillRound(g, wide ? Ui.TextSecondary : Ui.TextTertiary, r, w / 2f);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        var t = Thumb();
+        if (!t.Contains(e.Location))
+        {
+            // Click on the track: jump a page that way.
+            _owner.ScrollTo(_owner.Offset + (e.Y < t.Top ? -1 : 1) * _owner.ClientSize.Height * 9 / 10);
+            return;
+        }
+        Dragging = true;
+        _grabY = e.Y;
+        _grabOffset = _owner.Offset;
+        Capture = true;
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (!Dragging) return;
+        var t = Thumb();
+        var travel = Math.Max(1, Height - t.Height);
+        _owner.ScrollTo(_grabOffset + (int)((long)(e.Y - _grabY) * (_owner.Content - Height) / travel));
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        Dragging = false;
+        Capture = false;
+        Invalidate();
     }
 }
 

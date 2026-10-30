@@ -20,6 +20,8 @@ sealed class IncomingRequest
     public required string SenderIp { get; init; }
     public required string SenderFingerprint { get; init; }
     public required List<IncomingFile> Files { get; init; }
+    /// <summary>The sender's little mouth colour, if they use one.</summary>
+    public Color? SenderCreature { get; init; }
     public long TotalSize => Files.Sum(f => f.Size);
 }
 
@@ -45,6 +47,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
     /// <summary>Another LocalSend Drop PC asks us to send it a file.</summary>
     public event Action<FileRequest>? FileRequested;
     public event Action<string, string>? Waved;                     // alias, fingerprint
+    public event Action<ScreenOffer>? ScreenOffered;
     /// <summary>A transfer ended: saved paths on success, or a reason on failure.</summary>
     public event Action<IncomingRequest, List<string>, string?>? Ended;
 
@@ -136,6 +139,8 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         app.MapGet("/api/localsend-drop/v1/resume", (Func<HttpContext, IResult>)(ctx => ResumeOffset(ctx)));
         app.MapPost("/api/localsend-drop/v1/request", (Func<HttpContext, Task<IResult>>)(ctx => Request(ctx)));
         app.MapPost("/api/localsend-drop/v1/wave", (Func<HttpContext, Task<IResult>>)(ctx => Wave(ctx)));
+        app.MapPost("/api/localsend-drop/v1/screen/offer", (Func<HttpContext, Task<IResult>>)(ctx => ScreenOffer(ctx)));
+        app.MapGet("/api/localsend-drop/v1/screen", (Func<HttpContext, Task>)(ctx => ScreenShare.Stream(ctx)));
 
         await app.StartAsync();
         _app = app;
@@ -185,6 +190,27 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         return Results.Ok();
     }
 
+    async Task<IResult> ScreenOffer(HttpContext ctx)
+    {
+        JsonElement body;
+        try { body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body); }
+        catch { return Results.BadRequest(); }
+        if (Quiet.Active) return Results.StatusCode(423);
+        string? Str(string name) => body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var token = Str("token");
+        if (token is not { Length: > 16 }) return Results.BadRequest();
+        var fingerprint = ctx.Connection.ClientCertificate is { } cc ? Identity.FingerprintOf(cc) : Str("fingerprint") ?? "";
+        var port = body.TryGetProperty("port", out var p) && p.TryGetInt32(out var n) ? n : 53317;
+        var alias = Str("alias") ?? "Someone";
+        ScreenOffered?.Invoke(new ScreenOffer(alias[..Math.Min(alias.Length, 60)], fingerprint, RemoteIp(ctx), port, token));
+        return Results.Ok();
+    }
+
+    static Color? ParseColor(string hex)
+    {
+        try { return ColorTranslator.FromHtml(hex); } catch { return null; }
+    }
+
     async Task<IResult> PrepareUpload(HttpContext ctx)
     {
         JsonElement body;
@@ -224,6 +250,9 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
             SenderIp = RemoteIp(ctx),
             SenderFingerprint = fingerprint,
             Files = files,
+            SenderCreature = info.ValueKind == JsonValueKind.Object && info.TryGetProperty("creature", out var cr)
+                && cr.ValueKind == JsonValueKind.String && cr.GetString() is { Length: 7 } hex && hex[0] == '#'
+                ? ParseColor(hex) : null,
         };
         lock (_lock)
         {
