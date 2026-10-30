@@ -1,0 +1,101 @@
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
+
+namespace LocalSendDrop;
+
+/// <summary>
+/// This device's TLS identity. Newer LocalSend receivers demand a client
+/// certificate (mTLS) and identify senders by the SHA-256 of that certificate,
+/// so we keep one self-signed RSA-2048 certificate per user, like LocalSend does.
+/// </summary>
+sealed class Identity
+{
+    public X509Certificate2 Certificate { get; }
+    public string Fingerprint { get; }
+    public string Alias { get; set; }
+
+    Identity(X509Certificate2 cert, string alias)
+    {
+        Certificate = cert;
+        Fingerprint = FingerprintOf(cert);
+        Alias = alias;
+    }
+
+    public static string FingerprintOf(X509Certificate cert) =>
+        Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()));
+
+    // LSDROP_DATA lets a second instance run with its own identity (testing).
+    public static string DataDir { get; } = Environment.GetEnvironmentVariable("LSDROP_DATA") is { Length: > 0 } dir
+        ? dir
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LocalSendDrop");
+
+    public static Identity LoadOrCreate()
+    {
+        Directory.CreateDirectory(DataDir);
+        var pfxPath = Path.Combine(DataDir, "identity.pfx");
+
+        X509Certificate2? cert = null;
+        if (File.Exists(pfxPath))
+        {
+            try { cert = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, null, X509KeyStorageFlags.UserKeySet); }
+            catch { cert = null; }
+        }
+        if (cert == null)
+        {
+            using var rsa = RSA.Create(2048);
+            var req = new CertificateRequest("CN=LocalSend User", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using var created = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(100));
+            var pfx = created.Export(X509ContentType.Pfx);
+            File.WriteAllBytes(pfxPath, pfx);
+            // Re-import so SChannel can use the private key for client auth.
+            cert = X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.UserKeySet);
+        }
+
+        return new Identity(cert, Settings.Current.Alias ?? Environment.MachineName);
+    }
+}
+
+sealed class Settings
+{
+    public string? Alias { get; set; }
+    public bool FirstRunDone { get; set; }
+    public string? SaveDir { get; set; }
+    /// <summary>"ask", "known" (auto-accept trusted devices) or "all".</summary>
+    public string ReceiveMode { get; set; } = "ask";
+    /// <summary>TopLeft, TopRight, BottomLeft or BottomRight.</summary>
+    public string Corner { get; set; } = "TopLeft";
+    /// <summary>Screen.DeviceName of the chosen monitor; null = main monitor.</summary>
+    public string? Monitor { get; set; }
+
+    /// <summary>The chosen monitor, falling back to the main one if it's unplugged.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Windows.Forms.Screen TargetScreen =>
+        System.Windows.Forms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == Monitor) ?? System.Windows.Forms.Screen.PrimaryScreen!;
+    public bool Sound { get; set; } = true;
+    public bool AutoUpdate { get; set; } = true;
+    /// <summary>Fingerprints of senders accepted before.</summary>
+    public List<string> Trusted { get; set; } = [];
+
+    [System.Text.Json.Serialization.JsonIgnore] public bool Right => Corner.EndsWith("Right");
+    [System.Text.Json.Serialization.JsonIgnore] public bool Bottom => Corner.StartsWith("Bottom");
+
+    public static string DefaultSaveDir =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+
+    static readonly string FilePath = Path.Combine(Identity.DataDir, "settings.json");
+
+    public static Settings Current { get; } = Load();
+
+    static Settings Load()
+    {
+        try { return JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)) ?? new(); }
+        catch { return new(); }
+    }
+
+    public void Save()
+    {
+        Directory.CreateDirectory(Identity.DataDir);
+        File.WriteAllText(FilePath, JsonSerializer.Serialize(this));
+    }
+}
