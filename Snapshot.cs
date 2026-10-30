@@ -34,6 +34,24 @@ static class Snapshot
                 panel.Show();
                 panel.ShowExpanded();
                 Save(panel, Path.Combine(folder, $"panel-{mode}.png"));
+                // The little mouth: idle, wide open, mid-gulp, chomping, happy.
+                using (var strip = new Bitmap(5 * 120, 120))
+                {
+                    using var g = Graphics.FromImage(strip);
+                    g.Clear(Ui.Solid(Ui.Base));
+                    Thread.Sleep(500);
+                    var foodImage = Directory.GetFiles(AppContext.BaseDirectory, "*.dll").Select(f => Thumbs.Preview(f, () => { })?.Image).FirstOrDefault();
+                    Mouth.Pose[] poses = [new(0), new(1), Mouth.AtGulp(0.15, foodImage), Mouth.AtGulp(0.4, null), Mouth.AtGulp(0.8, null)];
+                    for (var i = 0; i < poses.Length; i++)
+                    {
+                        var state = g.Save();
+                        g.TranslateTransform(i * 120, 0);
+                        g.SetClip(new Rectangle(0, 0, 120, 120));
+                        Mouth.Paint(g, 1f, poses[i]);
+                        g.Restore(state);
+                    }
+                    strip.Save(Path.Combine(folder, $"mouth-{mode}.png"));
+                }
                 var shelf = Directory.GetFiles(folder, "panel-*.png").Take(2)
                     .Concat(Directory.GetFiles(AppContext.BaseDirectory, "*.dll").Take(1))
                     .Append(AppContext.BaseDirectory.TrimEnd('\\')).ToList();

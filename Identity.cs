@@ -76,6 +76,8 @@ sealed class Settings
     public bool AutoUpdate { get; set; } = true;
     /// <summary>Windows11, Windows10 or Glass.</summary>
     public string Theme { get; set; } = "Windows11";
+    /// <summary>The corner when the panel is closed: "Strip" (thin accent line) or "Mouth".</summary>
+    public string ZoneStyle { get; set; } = "Strip";
     /// <summary>Decline incoming transfers (they're listed in Recent).</summary>
     public bool DoNotDisturb { get; set; }
     /// <summary>Also be quiet while presenting or running something fullscreen.</summary>

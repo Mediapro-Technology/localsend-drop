@@ -19,6 +19,13 @@ sealed class SettingsForm : Form
         (Ui.Look.Glass, "Glass", "Frosted see-through panels and smooth animations"),
     ];
 
+    static readonly (string Key, string Title, string Sub)[] Zones =
+    [
+        ("Strip", "Thin strip", "A slim line along the corner"),
+        ("Mouth", "Little mouth", "Opens wide when you bring a file, and gobbles what you send"),
+    ];
+
+    readonly List<RadioRow> _zones = [];
     readonly ScrollPanel _scroll = new();
     readonly List<RadioRow> _looks = [];
     readonly Ui.Look _originalLook = Ui.Style;
@@ -104,6 +111,13 @@ sealed class SettingsForm : Form
         _scroll.Add(new SectionHeader("Drop zone"));
         _scroll.Add(new Card(Screen.AllScreens.Length > 1 ? "Monitor and corner" : "Corner",
             "Select a corner to move the drop zone there", below: [_corner]));
+        foreach (var z in Zones)
+        {
+            var row = new RadioRow(z.Title, z.Sub) { Selected = z.Key == s.ZoneStyle };
+            row.Click += (_, _) => { foreach (var r in _zones) r.Selected = r == row; };
+            _zones.Add(row);
+        }
+        _scroll.Add(new Card("Style", "How the corner looks while the panel is closed", below: [.. _zones]));
 
         _scroll.Add(new SectionHeader("Shortcuts"));
         static string Key(string keys, bool ok) => ok ? keys : $"{keys} (another app is using it)";
@@ -233,6 +247,7 @@ sealed class SettingsForm : Form
     public bool DoNotDisturb => _quiet.Checked;
     public bool AutoQuiet => _autoQuiet.Checked;
     public bool ForgetTrusted { get; private set; }
+    public string ZoneStyle => Zones[Math.Max(0, _zones.FindIndex(r => r.Selected))].Key;
     public string Theme => Looks[Math.Max(0, _looks.FindIndex(r => r.Selected))].Look.ToString();
 
     protected override void OnFormClosed(FormClosedEventArgs e)

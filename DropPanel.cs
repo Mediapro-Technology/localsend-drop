@@ -29,6 +29,9 @@ sealed class DropPanel : Form
     int _trayH, _hoverTile = -1;
     readonly List<Rectangle> _tiles = [];   // the files on the shelf, as icons under the header
     List<HistoryEntry> _recent = [];
+    Mouth? _mouth;                    // the "Little mouth" corner, when chosen
+    string? _ateFrom;                 // something was sent while open: the mouth gulps it on close
+    bool _ateText;
     int _hoverRecent = -1;
 
     // layout (device pixels), rebuilt in Measure()
@@ -220,10 +223,30 @@ sealed class DropPanel : Form
         int len = S(140), t = S(3);
         Ui.Chrome(Handle, round: false);
         Bounds = new Rectangle(st.Right ? screen.Right - len : screen.Left, st.Bottom ? screen.Bottom - len : screen.Top, len, len);
-        // An L hugging the corner: flinging a file at the corner always lands in it.
-        var region = new Region(new Rectangle(0, st.Bottom ? len - t : 0, len, t));
-        region.Union(new Rectangle(st.Right ? len - t : 0, 0, t, len));
-        Region = region;
+        if (st.ZoneStyle == "Mouth")
+        {
+            // The mouth is its own window; this one steps aside until it's needed.
+            Region = new Region(Rectangle.Empty);
+            if (_mouth == null)
+            {
+                _mouth = new Mouth();
+                _mouth.Wanted += () => Expand(false);
+                _mouth.Ate += Shelve;
+            }
+            _mouth.Place();
+            if (_ateFrom != null || _ateText) _mouth.Gulp(_ateFrom == null ? null : Thumbs.Preview(_ateFrom, () => { })?.Image);
+            else _mouth.Waiting(false);
+        }
+        else
+        {
+            _mouth?.Hide();
+            // An L hugging the corner: flinging a file at the corner always lands in it.
+            var region = new Region(new Rectangle(0, st.Bottom ? len - t : 0, len, t));
+            region.Union(new Rectangle(st.Right ? len - t : 0, 0, t, len));
+            Region = region;
+        }
+        _ateFrom = null;
+        _ateText = false;
         Invalidate();
     }
 
@@ -246,6 +269,7 @@ sealed class DropPanel : Form
         }
         Measure();
         Ui.KeepOnTop(Handle);
+        if (opening && _mouth is { Visible: true }) _mouth.Waiting(true);
         if (opening) Effects.Show(this, Settings.Current.Bottom ? S(12) : -S(12));
         _leaveTimer.Start();
         Invalidate();
@@ -586,6 +610,17 @@ sealed class DropPanel : Form
         var label = target ? "Keep" : onShelf > 0 ? $"{onShelf} kept" : "Shelf";
         Ui.DrawText(g, label, Ui.Caption, new Rectangle(r.Left, r.Top + S(26), r.Width, S(16)), fore,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+    }
+
+    /// <summary>Files fed to the mouth: they go on the shelf.</summary>
+    void Shelve(string[] files)
+    {
+        _pending = (_pending ?? []).Concat(files).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        _pendingText = null;
+        SummarizePaths(_pending.ToArray());
+        Expand(false);
+        Measure();
+        Invalidate();
     }
 
     /// <summary>Clicking the shelf: choose files to put on it.</summary>
@@ -1027,6 +1062,7 @@ sealed class DropPanel : Form
             _notify($"Already sending to {d.Alias}", false);
             return;
         }
+        if (sources.Count > 0) _ateFrom = sources[0]; else _ateText = true;
         var st = new SendState { Cts = new CancellationTokenSource(), Status = "Connecting…" };
         _sending[d.Fingerprint] = st;
         Invalidate();
