@@ -26,9 +26,9 @@ sealed class SettingsForm : Form
     Rectangle _close;
     bool _closeHot;
 
-    readonly LinkText _menu = new("Add \"Send with LocalSend Drop\" to the right-click menu");
+    readonly LinkText _menu = new("Install properly (Start menu and right-click menu)");
 
-    public SettingsForm(bool autostart, Func<Task> addMenu)
+    public SettingsForm(bool autostart, Func<Task<bool>> install)
     {
         var s = Settings.Current;
         Text = "LocalSend Drop settings";
@@ -65,14 +65,14 @@ sealed class SettingsForm : Form
         _forget.Visible = trusted > 0;
         _forget.Click += (_, _) => { ForgetTrusted = true; _forget.Text = "They'll be forgotten when you save"; _forget.Width = _forget.Measure().Width; };
 
-        _menu.Visible = ShellPackage.Supported && !ShellPackage.Installed;
+        _menu.Visible = Packaging.Supported && !Packaging.IsPackaged;
         _menu.Click += async (_, _) =>
         {
-            _menu.Text = "Adding… approve the Windows prompt";
+            _menu.Text = "Installing… approve the Windows prompt";
             _menu.Enabled = false;
-            await addMenu();
-            _menu.Text = ShellPackage.Installed ? "Added to the right-click menu" : "Add to the right-click menu again";
-            _menu.Enabled = !ShellPackage.Installed;
+            if (await install()) { DialogResult = DialogResult.Cancel; return; }
+            _menu.Text = "Try installing again";
+            _menu.Enabled = true;
             _menu.Width = _menu.Measure().Width;
         };
 

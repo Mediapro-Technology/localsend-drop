@@ -1,18 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Sparse package: it holds no app files. It only gives LocalSend Drop a package
-  identity so Windows 11 shows "Send with LocalSend Drop" in its short right-click
-  menu. Installed with: Add-AppxPackage <msix> -ExternalLocation <folder of LocalSendDrop.exe>
+  LocalSend Drop as a full MSIX: the app, the right-click menu handler, its
+  firewall rules and a "LocalSendDrop.exe" command alias. Built by shell/build.ps1.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap10 desktop4 desktop5 com rescap">
+  IgnorableNamespaces="uap uap5 desktop desktop2 desktop4 desktop5 desktop6 com rescap">
 
   <Identity Name="MediaproTechnology.LocalSendDrop" Publisher="CN=Mediapro Technology"
             Version="$VERSION$" ProcessorArchitecture="x64" />
@@ -21,7 +23,10 @@
     <DisplayName>LocalSend Drop</DisplayName>
     <PublisherDisplayName>Mediapro Technology</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
-    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+    <!-- Settings, history and the Run key must stay where 1.x put them, and be
+         visible to the rest of Windows, so don't redirect writes into the package. -->
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
   </Properties>
 
   <Resources>
@@ -38,14 +43,19 @@
   </Capabilities>
 
   <Applications>
-    <Application Id="LocalSendDrop" Executable="LocalSendDrop.exe"
-                 uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
-      <uap:VisualElements AppListEntry="none" DisplayName="LocalSend Drop"
+    <Application Id="LocalSendDrop" Executable="LocalSendDrop.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="LocalSend Drop"
                           Description="Send files to PCs and phones on the network"
                           BackgroundColor="transparent"
                           Square150x150Logo="Assets\Square150x150Logo.png"
                           Square44x44Logo="Assets\Square44x44Logo.png" />
       <Extensions>
+        <uap5:Extension Category="windows.appExecutionAlias" Executable="LocalSendDrop.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="LocalSendDrop.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+
         <desktop4:Extension Category="windows.fileExplorerContextMenus">
           <desktop4:FileExplorerContextMenus>
             <desktop5:ItemType Type="*">
@@ -56,6 +66,7 @@
             </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>
+
         <com:Extension Category="windows.comServer">
           <com:ComServer>
             <com:SurrogateServer DisplayName="LocalSend Drop menu">
@@ -66,4 +77,14 @@
       </Extensions>
     </Application>
   </Applications>
+
+  <Extensions>
+    <!-- Lets other devices reach the receiver without a firewall prompt. -->
+    <desktop2:Extension Category="windows.firewallRules">
+      <desktop2:FirewallRules Executable="LocalSendDrop.exe">
+        <desktop2:Rule Direction="in" IPProtocol="TCP" Profile="domainAndPrivate" LocalPortMin="53317" LocalPortMax="53339" />
+        <desktop2:Rule Direction="in" IPProtocol="UDP" Profile="domainAndPrivate" LocalPortMin="53317" LocalPortMax="53317" />
+      </desktop2:FirewallRules>
+    </desktop2:Extension>
+  </Extensions>
 </Package>

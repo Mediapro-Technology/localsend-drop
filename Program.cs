@@ -26,7 +26,7 @@ static class Program
 
         // Windows blocks drag-and-drop from Explorer into elevated windows, so an
         // admin-launched copy restarts itself as the normal user.
-        if (IsElevated() && RelaunchUnelevated()) return 0;
+        if (!Packaging.IsPackaged && IsElevated() && RelaunchUnelevated()) return 0;
 
         using var single = new Mutex(true, @"Local\LocalSendDrop", out var first);
         if (!first && updated)
@@ -54,6 +54,7 @@ static class Program
             settings.FirstRunDone = true;
             settings.Save();
         }
+        else if (IsAutostart()) SetAutostart(true); // points it at this copy (the package after migrating)
 
         var id = Identity.LoadOrCreate();
         Discovery discovery;
@@ -103,33 +104,33 @@ static class Program
             Ok = error == null, Error = error,
         });
 
-        Shell.Register();
+        // The package brings its own right-click entry; a plain .exe uses the classic one.
+        if (Packaging.IsPackaged) Shell.Unregister(); else Shell.Register();
         Shell.Listen(paths => panel.BeginInvoke(() => panel.ShowShare(paths)));
 
-        // Windows 11: the packaged menu entry replaces the "Show more options" one.
-        async Task SetUpShellMenu(bool ask)
+        // A plain .exe moves itself into the installed package, then hands over.
+        async Task<bool> InstallPackage(bool mayPrompt)
         {
-            if (!ShellPackage.Supported) return;
-            if (await Task.Run(ShellPackage.IsInstalled))
+            if (Packaging.IsPackaged || !Packaging.Supported) return false;
+            if (mayPrompt) Notify("Installing LocalSend Drop… approve the Windows prompt", false);
+            string? error;
+            try { error = await Packaging.MigrateAsync(mayPrompt); }
+            catch (Exception ex) { error = ex.Message; }
+            if (error != null)
             {
-                ShellPackage.EnsureDll();
-                Shell.Unregister();
-                return;
+                if (mayPrompt) Notify($"Couldn't install: {error}", true);
+                return false;
             }
-            if (!ask) return;
-            var error = await Task.Run(ShellPackage.Install);
-            if (error == null)
-            {
-                Shell.Unregister();
-                Notify("\"Send with LocalSend Drop\" is now in the right-click menu", false);
-            }
-            else Notify($"Couldn't add to the right-click menu: {error}", true);
+            Shell.Unregister();
+            Packaging.LaunchInstalled("--updated");
+            Application.Exit();
+            return true;
         }
         _ = Task.Delay(TimeSpan.FromSeconds(8)).ContinueWith(_ => panel.BeginInvoke(async () =>
         {
             var first = !Settings.Current.ShellMenuOffered;
             if (first) { Settings.Current.ShellMenuOffered = true; Settings.Current.Save(); }
-            await SetUpShellMenu(ask: first);
+            await InstallPackage(mayPrompt: first);
         }));
 
         var menu = new ContextMenuStrip();
@@ -138,7 +139,7 @@ static class Program
         void ShowSettings()
         {
             if (open != null) { open.Activate(); return; }
-            using var f = open = new SettingsForm(IsAutostart(), () => SetUpShellMenu(ask: true));
+            using var f = open = new SettingsForm(IsAutostart(), () => InstallPackage(mayPrompt: true));
             var ok = f.ShowDialog() == DialogResult.OK;
             open = null;
             if (!ok) return;
@@ -198,13 +199,14 @@ static class Program
             while (panel.Busy || server.Busy) await Task.Delay(TimeSpan.FromSeconds(20));
             Notify($"Updating to {version}…", false);
             await Task.Delay(1500);
-            if (Updater.ApplyAndRestart()) Application.Exit();
-            else Notify($"Version {version} is ready, but this folder can't be written to. Move LocalSendDrop.exe somewhere like C:\\Tools.", true);
+            if (await Updater.ApplyAsync() is { } error) Notify($"Couldn't update to {version}: {error}", true);
+            else if (!Packaging.IsPackaged) Application.Exit();
         }
         var updateTimer = new System.Windows.Forms.Timer { Interval = (int)TimeSpan.FromHours(6).TotalMilliseconds };
         updateTimer.Tick += (_, _) => { if (Settings.Current.AutoUpdate) _ = CheckForUpdates(manual: false); };
         updateTimer.Start();
-        _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ =>
+        // Windows only restarts the app after an update if it ran for a minute or more.
+        _ = Task.Delay(TimeSpan.FromSeconds(75)).ContinueWith(_ =>
             panel.BeginInvoke(() => { if (Settings.Current.AutoUpdate) _ = CheckForUpdates(manual: false); }));
 
         if (updated) Notify($"Updated to {Updater.CurrentText}", false);
@@ -254,7 +256,7 @@ static class Program
     static void SetAutostart(bool on)
     {
         using var k = Registry.CurrentUser.CreateSubKey(RunKey);
-        if (on) k.SetValue(RunName, $"\"{Environment.ProcessPath}\"");
+        if (on) k.SetValue(RunName, Packaging.LaunchCommand);
         else k.DeleteValue(RunName, false);
     }
 
