@@ -7,6 +7,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
+# Publish as the org admin account, whichever gh account is active.
+$env:GH_TOKEN = gh auth token --user rizwan-mediapro
 
 $csproj = "LocalSendDrop.csproj"
 (Get-Content $csproj -Raw) -replace '<Version>[^<]+</Version>', "<Version>$Version</Version>" | Set-Content $csproj -NoNewline
