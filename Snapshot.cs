@@ -28,6 +28,8 @@ static class Snapshot
             // Sample nickname and pin, in memory only (never saved).
             Settings.Current.Nicknames["C3"] = "Design studio";
             if (!Settings.Current.Favorites.Contains("C3")) Settings.Current.Favorites.Add("C3");
+            if (Settings.Current.Groups.Count == 0)
+                Settings.Current.Groups.Add(new DeviceGroup { Name = "Design team", Members = ["C3", "B2", "Z9"] });
 
             using (var panel = new DropPanel(id, discovery, (_, _) => { }) { Opacity = 0 })
             {
@@ -62,6 +64,19 @@ static class Snapshot
                         g.Restore(state);
                     }
                     strip.Save(Path.Combine(folder, $"mouth-top-{mode}.png"));
+                    // Travel (wind-up, half gone, bouncing back), arriving with something, waving.
+                    g.Clear(Ui.Solid(Ui.Base));
+                    Mouth.Pose[] moves = [Mouth.AtTravel(0.5 + 0.5 * 0.08, null), Mouth.AtTravel(0.5 + 0.5 * 0.28, null),
+                        Mouth.AtArrive(0.65, foodImage), Mouth.AtWave(0.08), Mouth.AtWave(0.25)];
+                    for (var i = 0; i < moves.Length; i++)
+                    {
+                        var state = g.Save();
+                        g.TranslateTransform(i * 120, 0);
+                        g.SetClip(new Rectangle(0, 0, 120, 120));
+                        Mouth.Paint(g, 1f, moves[i]);
+                        g.Restore(state);
+                    }
+                    strip.Save(Path.Combine(folder, $"mouth-moves-{mode}.png"));
                     // A pulled snake: a wavy drag from the top-left corner, held for a moment at the end.
                     using var m = new Mouth();
                     var wa = Settings.Current.TargetScreen.Bounds;

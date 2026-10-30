@@ -41,6 +41,10 @@ sealed class DropPanel : Form
     // layout (device pixels), rebuilt in Measure()
     readonly List<Rectangle> _rows = [];
     readonly List<Rectangle> _recentRows = [];
+    readonly List<Rectangle> _groupRows = [];
+    // RowAt() results for group rows: -100, -101, …
+    static int GroupRow(int index) => -100 - index;
+    static int GroupIndex(int row) => row <= -100 ? -100 - row : -1;
     Rectangle _gear, _refresh, _again, _list, _discard, _clear, _everyone, _quiet, _qr, _shelf, _tray;
     int _recentLabelY;
 
@@ -53,6 +57,22 @@ sealed class DropPanel : Form
     public Action? ReceiveByQr;
     /// <summary>Device menu: open the conversation, or ask for a file.</summary>
     public Action<Device>? OpenNotes, AskForFile;
+    /// <summary>Device menu: wave at it.</summary>
+    public Action<Device>? Wave;
+
+    /// <summary>Something is arriving: the little mouth brings it in. False if there's no mouth to show it.</summary>
+    public bool Arrive(Image? food)
+    {
+        if (_mouth is not { Visible: true } || _expanded) return false;
+        _mouth.Arrive(food);
+        return true;
+    }
+
+    /// <summary>Someone waved: the little mouth wiggles back.</summary>
+    public void Waved()
+    {
+        if (_mouth is { Visible: true }) _mouth.Wave();
+    }
 
     /// <summary>The device with this fingerprint, if it's nearby.</summary>
     public Device? Find(string fingerprint) => _discovery.Devices.FirstOrDefault(d => d.Fingerprint == fingerprint);
@@ -257,7 +277,7 @@ sealed class DropPanel : Form
                 _mouth.Grabbed += () => { if (_expanded && !(Holding && !_shelved)) Collapse(); };
             }
             _mouth.Place();
-            if (_ateFrom != null || _ateText) _mouth.Gulp(_ateFrom == null ? null : Thumbs.Preview(_ateFrom, () => { })?.Image);
+            if (_ateFrom != null || _ateText) _mouth.Gulp(_ateFrom == null ? null : Thumbs.Preview(_ateFrom, () => { })?.Image, travel: true);
             else _mouth.Waiting(false);
         }
         else
@@ -346,7 +366,8 @@ sealed class DropPanel : Form
         int m = S(12), w = S(Width_);
         var everyoneH = _devices.Count >= 2 ? S(RowH) : 0;
         _trayH = _pending is { Count: > 0 } ? S(TrayH) : 0;
-        var listedH = _trayH + (_devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH));
+        var groupsH = _devices.Count == 0 ? 0 : Settings.Current.Groups.Count * S(RowH);
+        var listedH = _trayH + (_devices.Count == 0 ? S(EmptyH) : everyoneH + groupsH + _devices.Count * S(RowH));
         var devicesH = listedH + S(RowH) + S(8);   // + "Phone without the app"
         var contentH = devicesH + (ShowRecent ? S(RecentLabelH) + _recent.Count * S(RecentH) + S(8) : 0);
         var maxContent = wa.Height - 2 * m - S(HeaderH + FooterH) - (Settings.Current.Center ? MouthDrop : 0);
@@ -372,7 +393,10 @@ sealed class DropPanel : Form
         _shelf = _pendingText == null ? new Rectangle(w - S(16 + ShelfW), S(12), S(ShelfW), S(48)) : Rectangle.Empty;
         _everyone = everyoneH > 0 ? new Rectangle(S(Inset), _list.Top + _trayH - _scroll, w - S(2 * Inset), S(RowH)) : Rectangle.Empty;
         for (var i = 0; i < _devices.Count; i++)
-            _rows.Add(new Rectangle(S(Inset), _list.Top + _trayH + everyoneH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
+            _rows.Add(new Rectangle(S(Inset), _list.Top + _trayH + everyoneH + groupsH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
+        _groupRows.Clear();
+        for (var i = 0; i < groupsH / S(RowH); i++)
+            _groupRows.Add(new Rectangle(S(Inset), _list.Top + _trayH + everyoneH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
 
         _qr = new Rectangle(S(Inset), _list.Top + listedH - _scroll, w - S(2 * Inset), S(RowH));
         _recentRows.Clear();
@@ -450,6 +474,7 @@ sealed class DropPanel : Form
         if (!_list.Contains(p)) return -1;
         if (_dragging && _tray.Contains(p)) return ShelfRow;
         if (_everyone.Contains(p)) return Everyone;
+        for (var i = 0; i < _groupRows.Count; i++) if (_groupRows[i].Contains(p)) return GroupRow(i);
         if (_qr.Contains(p)) return QrRow;
         for (var i = 0; i < _rows.Count; i++) if (_rows[i].Contains(p)) return i;
         return -1;
@@ -482,6 +507,8 @@ sealed class DropPanel : Form
         g.SetClip(_list);
         if (_devices.Count == 0) PaintEmpty(g, pad, w);
         if (!_everyone.IsEmpty) PaintEveryone(g, _everyone);
+        for (var i = 0; i < _groupRows.Count; i++)
+            if (_groupRows[i].IntersectsWith(_list)) PaintGroup(g, i, _groupRows[i]);
         PaintQrRow(g, _qr);
         if (_tiles.Count > 0) PaintTray(g);
         for (var i = 0; i < _devices.Count; i++)
@@ -569,6 +596,31 @@ sealed class DropPanel : Form
         Ui.DrawText(g, target ? $"Release to send to all {_devices.Count}" : $"Send to all {_devices.Count} devices at once", Ui.Caption,
             new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
     }
+
+    void PaintGroup(Graphics g, int index, Rectangle r)
+    {
+        var group = Settings.Current.Groups[index];
+        var row = GroupRow(index);
+        var nearby = GroupTargets(index).Count;
+        var target = _dragOver == row;
+        if (target || (_hover == row && nearby > 0)) Ui.FillRound(g, Ui.SubtleHover, r, S(4));
+        if (target) Ui.FillRound(g, Ui.Accent, new RectangleF(r.Left, r.Top + (r.Height - S(16)) / 2f, S(3), S(16)), S(2) / 2f + 0.5f);
+        var icon = new Rectangle(r.Left + S(12), r.Top, S(24), r.Height);
+        Ui.DrawIcon(g, Ui.GlyphPeople, 14f, icon, nearby > 0 ? Ui.Text : Ui.TextTertiary);
+        var x = icon.Right + S(12);
+        Ui.DrawText(g, group.Name, Ui.Body, new Rectangle(x, r.Top + S(9), r.Right - x - S(12), S(20)), nearby > 0 ? Ui.Text : Ui.TextTertiary);
+        var sub = target ? $"Release to send to {nearby}"
+            : nearby == 0 ? "No one in this group is nearby"
+            : nearby == group.Members.Count ? $"Send to all {nearby}"
+            : $"{nearby} of {group.Members.Count} nearby";
+        Ui.DrawText(g, sub, Ui.Caption, new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
+    }
+
+    /// <summary>The group's members that are nearby right now.</summary>
+    List<Device> GroupTargets(int index) =>
+        index < Settings.Current.Groups.Count
+            ? _devices.Where(d => Settings.Current.Groups[index].Members.Contains(d.Fingerprint)).ToList()
+            : [];
 
     /// <summary>Tiles that stand for one file each; the last one may be "+3" instead.</summary>
     int TileFiles => _pending == null ? 0 : _pending.Count > _tiles.Count ? _tiles.Count - 1 : _tiles.Count;
@@ -804,6 +856,7 @@ sealed class DropPanel : Form
         if (e.Button == MouseButtons.Right)
         {
             if (RowAt(e.Location) is var di and >= 0) ShowDeviceMenu(_devices[di], e.Location);
+            else if (GroupIndex(RowAt(e.Location)) is var gi and >= 0) ShowGroupMenu(gi, e.Location);
             return;
         }
         if (e.Button != MouseButtons.Left) return;
@@ -816,6 +869,7 @@ sealed class DropPanel : Form
         var i = RowAt(e.Location);
         if (i == ShelfRow) AddToShelf();
         else if (i == Everyone) OnEveryoneClick();
+        else if (GroupIndex(i) is var gi and >= 0) SendToMany(GroupTargets(gi), Settings.Current.Groups[gi].Name);
         else if (i == QrRow) OnQrClick();
         else if (i >= 0) OnRowClick(_devices[i]);
     }
@@ -829,7 +883,24 @@ sealed class DropPanel : Form
         menu.Items.Add("Message…", null, (_, _) => BeginInvoke(() => OpenNotes?.Invoke(d)));
         menu.Items.Add("Ask for a file…", null, (_, _) => BeginInvoke(() => AskForFile?.Invoke(d)));
         menu.Items.Add("Send a link…", null, (_, _) => BeginInvoke(() => SendLink(d)));
+        menu.Items.Add("Wave", null, (_, _) => Wave?.Invoke(d));
         menu.Items.Add(new ToolStripSeparator());
+        var groups = new ToolStripMenuItem("Groups");
+        for (var gi = 0; gi < s.Groups.Count; gi++)
+        {
+            var group = s.Groups[gi];
+            var member = group.Members.Contains(d.Fingerprint);
+            groups.DropDownItems.Add(new ToolStripMenuItem(group.Name, null, (_, _) =>
+            {
+                if (member) group.Members.Remove(d.Fingerprint); else group.Members.Add(d.Fingerprint);
+                if (group.Members.Count == 0) s.Groups.Remove(group);
+                s.Save();
+                Reorder();
+            }) { Checked = member });
+        }
+        if (s.Groups.Count > 0) groups.DropDownItems.Add(new ToolStripSeparator());
+        groups.DropDownItems.Add("New group…", null, (_, _) => BeginInvoke(() => NewGroup(d)));
+        menu.Items.Add(groups);
         menu.Items.Add("Rename…", null, (_, _) => BeginInvoke(() => Rename(d)));
         if (s.Nicknames.ContainsKey(d.Fingerprint))
             menu.Items.Add($"Use its own name ({d.Alias})", null, (_, _) => { s.Nicknames.Remove(d.Fingerprint); s.Save(); Reorder(); });
@@ -840,6 +911,58 @@ sealed class DropPanel : Form
             s.Save();
             Reorder();
         });
+        _modal = true;
+        menu.Closed += (_, _) => _modal = false;
+        menu.Show(this, at);
+    }
+
+    void NewGroup(Device first)
+    {
+        _modal = true;
+        try
+        {
+            var name = PromptForm.Ask("New group", $"Starts with {NameOf(first)}. Add others from their menus.", "Create")?.Trim();
+            if (string.IsNullOrEmpty(name)) return;
+            Settings.Current.Groups.Add(new DeviceGroup { Name = name, Members = [first.Fingerprint] });
+            Settings.Current.Save();
+            Reorder();
+        }
+        finally { _modal = false; }
+    }
+
+    void ShowGroupMenu(int index, Point at)
+    {
+        var s = Settings.Current;
+        var group = s.Groups[index];
+        var menu = Ui.Menu();
+        menu.Items.Add("Rename…", null, (_, _) => BeginInvoke(() =>
+        {
+            _modal = true;
+            try
+            {
+                var name = PromptForm.Ask("Rename group", "", "Rename", group.Name)?.Trim();
+                if (string.IsNullOrEmpty(name)) return;
+                group.Name = name;
+                s.Save();
+                Reorder();
+            }
+            finally { _modal = false; }
+        }));
+        var members = new ToolStripMenuItem("Remove someone");
+        foreach (var fp in group.Members.ToList())
+        {
+            var name = Find(fp) is { } d ? NameOf(d)
+                : s.Nicknames.GetValueOrDefault(fp) ?? History.Latest(50).FirstOrDefault(h => h.PeerFingerprint == fp)?.Peer ?? "A device";
+            members.DropDownItems.Add(name, null, (_, _) =>
+            {
+                group.Members.Remove(fp);
+                if (group.Members.Count == 0) s.Groups.Remove(group);
+                s.Save();
+                Reorder();
+            });
+        }
+        menu.Items.Add(members);
+        menu.Items.Add("Delete group", null, (_, _) => { s.Groups.Remove(group); s.Save(); Reorder(); });
         _modal = true;
         menu.Closed += (_, _) => _modal = false;
         menu.Show(this, at);
@@ -935,6 +1058,7 @@ sealed class DropPanel : Form
         if (!_expanded) { e.Effect = _dragHasFiles ? DragDropEffects.Copy : DragDropEffects.None; return; }
         var i = Accepts(e) ? RowAt(PointToClient(new Point(e.X, e.Y))) : -1;
         if (i == ShelfRow && !_dragHasFiles) i = -1;   // only files go on the shelf
+        if (GroupIndex(i) is var dgi and >= 0 && GroupTargets(dgi).Count == 0) i = -1;
         e.Effect = i != -1 ? DragDropEffects.Copy : DragDropEffects.None;
         if (i != _dragOver) { _dragOver = i; Invalidate(); }
     }
@@ -979,7 +1103,9 @@ sealed class DropPanel : Form
             BeginInvoke(() => { ShareByQr?.Invoke(dropped != null ? Sender.FromPaths(dropped) : [], droppedText); Collapse(); });
             return;
         }
-        var targets = i == Everyone ? _devices.ToList() : i >= 0 && i < _devices.Count ? [_devices[i]] : new List<Device>();
+        var targets = i == Everyone ? _devices.ToList()
+            : GroupIndex(i) is var gi and >= 0 ? GroupTargets(gi)
+            : i >= 0 && i < _devices.Count ? [_devices[i]] : new List<Device>();
         if (targets.Count == 0) return;
 
         List<SendItem> items;
@@ -1073,9 +1199,11 @@ sealed class DropPanel : Form
         menu.Show(this, new Point(_qr.Left + S(48), _qr.Bottom - S(8)));
     }
 
-    void OnEveryoneClick()
+    void OnEveryoneClick() => SendToMany(_devices.ToList(), "everyone nearby");
+
+    void SendToMany(List<Device> targets, string title)
     {
-        var targets = _devices.ToList();
+        if (targets.Count == 0) return;
         if (Holding)
         {
             var (items, sources) = TakePending();
@@ -1085,7 +1213,7 @@ sealed class DropPanel : Form
         _modal = true;
         try
         {
-            using var dlg = new OpenFileDialog { Multiselect = true, Title = "Send to everyone nearby" };
+            using var dlg = new OpenFileDialog { Multiselect = true, Title = $"Send to {title}" };
             if (dlg.ShowDialog(this) == DialogResult.OK)
                 foreach (var d in targets) StartSend(d, Sender.FromPaths(dlg.FileNames), dlg.FileNames.ToList());
         }

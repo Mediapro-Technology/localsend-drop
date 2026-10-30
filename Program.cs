@@ -126,6 +126,9 @@ static class Program
                 });
                 return false;
             }
+            // The little mouth brings it in first.
+            var food = Thumbs.FromDataUri(r.Files.FirstOrDefault(f => f.Thumbnail != null)?.Thumbnail);
+            if (panel.Invoke(() => panel.Arrive(food))) await Task.Delay(900, ct);
             var trusted = r.SenderFingerprint.Length > 0 && s.Trusted.Contains(r.SenderFingerprint);
             if (s.ReceiveMode == "all" || (s.ReceiveMode == "known" && trusted))
             {
@@ -260,6 +263,24 @@ static class Program
             Notify(error == null ? $"Asked {name}. Their file will arrive without a prompt." : $"Couldn't ask {name}: {error}", error != null);
         };
         server.FileRequested += req => card.BeginInvoke(() => card.OnFileRequest(req));
+
+        // ---- waving ----
+        panel.Wave = async d =>
+        {
+            var name = DropPanel.DisplayName(d);
+            var error = await Waves.SendAsync(id, d);
+            Notify(error == null ? $"You waved at {name}" : $"Couldn't wave at {name}: {error}", error != null);
+        };
+        server.Waved += (alias, fingerprint) => card.BeginInvoke(() =>
+        {
+            panel.Waved();
+            card.OnWave(panel.Find(fingerprint) is { } d ? DropPanel.DisplayName(d) : alias, fingerprint);
+        });
+        card.WaveBack = (fingerprint, alias) =>
+        {
+            if (panel.Find(fingerprint) is { } d) panel.Wave?.Invoke(d);
+            else Notify($"{alias} isn't nearby right now", true);
+        };
         card.AnswerRequest = req =>
         {
             var device = panel.Find(req.Fingerprint) ?? new Device

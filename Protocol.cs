@@ -100,6 +100,29 @@ static class Rate
     };
 }
 
+/// <summary>A LocalSend Drop extension: wave at another PC, no file needed.</summary>
+static class Waves
+{
+    /// <returns>null if it got there, otherwise why not.</returns>
+    public static async Task<string?> SendAsync(Identity id, Device target)
+    {
+        try
+        {
+            using var client = LsHttp.Create(id, LsHttp.PinFor(target), TimeSpan.FromSeconds(8));
+            var resp = await client.PostAsJsonAsync(target.Root + "/api/localsend-drop/v1/wave",
+                new { alias = id.Alias, fingerprint = id.Fingerprint }, Json.Options);
+            return (int)resp.StatusCode switch
+            {
+                200 => null,
+                423 => "they have Do not disturb on",
+                404 or 405 => "they need the latest LocalSend Drop",
+                var code => $"their PC answered {code}",
+            };
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return "their PC didn't answer"; }
+    }
+}
+
 /// <summary>A LocalSend Drop extension: ask another PC to send you a file.</summary>
 sealed record FileRequest(string Alias, string Fingerprint, string Ip, int Port, string? Note);
 

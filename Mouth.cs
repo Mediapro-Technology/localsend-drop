@@ -12,11 +12,14 @@ namespace LocalSendDrop;
 sealed class Mouth : Form
 {
     /// <summary>One frame: how wide the mouth is, the food on its way in, the mood.</summary>
+    /// <param name="Hide">0 = at home, 1 = ducked out of sight behind the edge (negative pops out a bit).</param>
+    /// <param name="Tilt">Extra head tilt in degrees.</param>
     public record struct Pose(double Open, double Squash = 0, double Food = -1, Image? FoodImage = null,
-        bool Happy = false, bool Blink = false);
+        bool Happy = false, bool Blink = false, double Hide = 0, double Tilt = 0);
 
     const int Canvas = 112;
-    static readonly TimeSpan GulpTime = TimeSpan.FromMilliseconds(1300), BlinkTime = TimeSpan.FromMilliseconds(160);
+    static readonly TimeSpan GulpTime = TimeSpan.FromMilliseconds(1300), BlinkTime = TimeSpan.FromMilliseconds(160),
+        DashTime = TimeSpan.FromMilliseconds(1400), ArriveTime = TimeSpan.FromMilliseconds(1600), WaveTime = TimeSpan.FromMilliseconds(1600);
 
     readonly System.Windows.Forms.Timer _tick = new() { Interval = 16 };
     readonly System.Windows.Forms.Timer _blink = new() { Interval = 5000 };
@@ -30,8 +33,9 @@ sealed class Mouth : Form
     Point _pressAt;
     double _retractSpeed;
     long _snakeStart;
-    DateTime _gulpStart = DateTime.MinValue, _blinkStart = DateTime.MinValue;
-    Image? _food;
+    DateTime _animStart = DateTime.MinValue, _blinkStart = DateTime.MinValue;
+    TimeSpan _animTime;
+    Func<double, Pose>? _anim;   // what it's acting out, from 0 to 1 over _animTime
 
     /// <summary>A file or the mouse arrived: open the panel.</summary>
     public event Action? Wanted;
@@ -92,13 +96,29 @@ sealed class Mouth : Form
     }
 
     /// <summary>Gobble what was just sent. <paramref name="food"/> is its icon, if there is one.</summary>
-    public void Gulp(Image? food)
+    /// <param name="travel">Then dash off behind the edge to deliver it, and pop back.</param>
+    public void Gulp(Image? food, bool travel = false)
     {
-        _food = food;
-        _gulpStart = DateTime.UtcNow;
+        if (travel) Play(t => AtTravel(t, food), GulpTime + DashTime);
+        else Play(t => AtGulp(t, food), GulpTime);
+    }
+
+    /// <summary>Something's arriving: pop out with it in its mouth and spit it out.</summary>
+    public void Arrive(Image? food) => Play(t => AtArrive(t, food), ArriveTime);
+
+    /// <summary>Someone waved: wiggle hello.</summary>
+    public void Wave() => Play(AtWave, WaveTime);
+
+    void Play(Func<double, Pose> anim, TimeSpan time, double from = 0)
+    {
+        _anim = anim;
+        _animTime = time;
+        _animStart = DateTime.UtcNow - time * from;
         _open = _openTarget = 0;
         _tick.Start();
     }
+
+    bool Animating => _anim != null && DateTime.UtcNow - _animStart < _animTime;
 
     void Step()
     {
@@ -106,7 +126,7 @@ sealed class Mouth : Form
         _open += (_openTarget - _open) * 0.3;
         if (Math.Abs(_openTarget - _open) < 0.01) _open = _openTarget;
         var busy = _open != _openTarget
-            || DateTime.UtcNow - _gulpStart < GulpTime
+            || Animating
             || DateTime.UtcNow - _blinkStart < BlinkTime;
         Render();
         if (!busy) _tick.Stop();
@@ -114,9 +134,8 @@ sealed class Mouth : Form
 
     Pose Current()
     {
-        var gulp = (DateTime.UtcNow - _gulpStart) / GulpTime;
         var blink = DateTime.UtcNow - _blinkStart < BlinkTime;
-        return gulp < 1 ? AtGulp(gulp, _food) : new Pose(_open, Blink: blink);
+        return Animating ? _anim!((DateTime.UtcNow - _animStart) / _animTime) : new Pose(_open, Blink: blink);
     }
 
     /// <summary>The gulp, from 0 to 1: the food flies in, three chomps, then a happy swallow.</summary>
@@ -129,6 +148,37 @@ sealed class Mouth : Form
             return new Pose((1 + Math.Cos(u * 6 * Math.PI)) / 2 * (1 - u), Squash: 0.05 * Math.Abs(Math.Sin(u * 6 * Math.PI)));
         }
         return new Pose(0, Squash: 0.08 * Math.Sin((t - 0.65) / 0.35 * Math.PI), Happy: true);
+    }
+
+    /// <summary>Gulp, then off it goes to deliver it: a little wind-up, a dive behind the edge, and a bouncy return.</summary>
+    public static Pose AtTravel(double t, Image? food)
+    {
+        var g = GulpTime / (GulpTime + DashTime);
+        if (t < g) return AtGulp(t / g, food);
+        var u = (t - g) / (1 - g);
+        if (u < 0.15) return new Pose(0, Hide: -0.08 * Math.Sin(u / 0.15 * Math.PI));
+        if (u < 0.35) { var k = (u - 0.15) / 0.2; return new Pose(0, Hide: k * k); }
+        if (u < 0.65) return new Pose(0, Hide: 1);
+        return new Pose(0, Hide: 1 - EaseOutBack((u - 0.65) / 0.35), Happy: true);
+    }
+
+    /// <summary>Back from the other PC with something: pop out, open up, spit it out towards you.</summary>
+    public static Pose AtArrive(double t, Image? food)
+    {
+        if (t < 0.35) return new Pose(0.3, Hide: 1 - EaseOutBack(t / 0.35));
+        if (t < 0.5) return new Pose(0.3 + (t - 0.35) / 0.15 * 0.7);
+        if (t < 0.8) return new Pose(1, Food: 1 - (t - 0.5) / 0.3, FoodImage: food);
+        return new Pose(1 - (t - 0.8) / 0.2, Happy: true);
+    }
+
+    /// <summary>A happy side-to-side wiggle that settles.</summary>
+    public static Pose AtWave(double t) =>
+        new(0.35 * (1 - t), Squash: 0.04 * Math.Abs(Math.Sin(t * 6 * Math.PI)), Happy: true, Tilt: 16 * Math.Sin(t * 6 * Math.PI) * (1 - t));
+
+    static double EaseOutBack(double x)
+    {
+        const double c1 = 1.70158, c3 = c1 + 1;
+        return 1 + c3 * Math.Pow(x - 1, 3) + c1 * Math.Pow(x - 1, 2);
     }
 
     // ---- drawing ----
@@ -144,7 +194,10 @@ sealed class Mouth : Form
         var dark = Ui.Blend(body, Color.Black, 0.55);
         var k = 8 * s;
         var r = (float)((34 + 12 * p.Open) * s * (1 + p.Squash));
-        var c = center ?? new PointF(k, k);
+        var home = center ?? new PointF(k, k);
+        float hx = MathF.Cos(angle * MathF.PI / 180), hy = MathF.Sin(angle * MathF.PI / 180);
+        var c = new PointF(home.X - hx * r * 1.4f * (float)p.Hide, home.Y - hy * r * 1.4f * (float)p.Hide);
+        angle += (float)p.Tilt;
         using (var b = new SolidBrush(body)) g.FillEllipse(b, c.X - r, c.Y - r, 2 * r, 2 * r);
         using (var edge = new Pen(Ui.Blend(body, Color.Black, 0.25), 1.2f * s)) g.DrawEllipse(edge, c.X - r, c.Y - r, 2 * r, 2 * r);
 
@@ -390,8 +443,7 @@ sealed class Mouth : Form
         _retracting = false;
         _chain.Clear();
         Place();
-        _gulpStart = DateTime.UtcNow - GulpTime * 0.65;   // back home: a little squash and a happy face
-        _tick.Start();
+        Play(t => AtGulp(t, null), GulpTime, from: 0.65);   // back home: a little squash and a happy face
         return false;
     }
 

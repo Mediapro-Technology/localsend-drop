@@ -44,6 +44,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
     public event Action<string, string, string>? MessageReceived;   // alias, fingerprint, text
     /// <summary>Another LocalSend Drop PC asks us to send it a file.</summary>
     public event Action<FileRequest>? FileRequested;
+    public event Action<string, string>? Waved;                     // alias, fingerprint
     /// <summary>A transfer ended: saved paths on success, or a reason on failure.</summary>
     public event Action<IncomingRequest, List<string>, string?>? Ended;
 
@@ -134,6 +135,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         app.MapGet("/s/{token}/all.zip", (Func<HttpContext, string, Task>)((ctx, token) => QrShare.All(ctx, token)));
         app.MapGet("/api/localsend-drop/v1/resume", (Func<HttpContext, IResult>)(ctx => ResumeOffset(ctx)));
         app.MapPost("/api/localsend-drop/v1/request", (Func<HttpContext, Task<IResult>>)(ctx => Request(ctx)));
+        app.MapPost("/api/localsend-drop/v1/wave", (Func<HttpContext, Task<IResult>>)(ctx => Wave(ctx)));
 
         await app.StartAsync();
         _app = app;
@@ -167,6 +169,19 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         var note = Str("note");
         FileRequested?.Invoke(new FileRequest(Str("alias") ?? "Someone", fingerprint, RemoteIp(ctx), port,
             note is { Length: > 0 } ? note[..Math.Min(note.Length, 200)] : null));
+        return Results.Ok();
+    }
+
+    async Task<IResult> Wave(HttpContext ctx)
+    {
+        JsonElement body;
+        try { body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body); }
+        catch { return Results.BadRequest(); }
+        if (Quiet.Active) return Results.StatusCode(423);
+        string? Str(string name) => body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var fingerprint = ctx.Connection.ClientCertificate is { } cc ? Identity.FingerprintOf(cc) : Str("fingerprint") ?? "";
+        var alias = Str("alias") ?? "Someone";
+        Waved?.Invoke(alias[..Math.Min(alias.Length, 60)], fingerprint);
         return Results.Ok();
     }
 

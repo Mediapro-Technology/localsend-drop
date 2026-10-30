@@ -10,7 +10,7 @@
     <RootNamespace>LocalSendDrop</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>2.3.9</Version>
+    <Version>2.3.10</Version>
     <!-- No designer is used, so designer-serialization warnings do not apply. -->
     <NoWarn>$(NoWarn);WFO1000;CS8765</NoWarn>
 

@@ -31,6 +31,8 @@ sealed class IncomingCard : Form
     public Action<string, string>? Reply;
     /// <summary>Someone asked for a file and we chose to answer.</summary>
     public Action<FileRequest>? AnswerRequest;
+    /// <summary>"Wave back" on a wave: fingerprint, alias.</summary>
+    public Action<string, string>? WaveBack;
 
     public IncomingCard()
     {
@@ -334,6 +336,19 @@ sealed class IncomingCard : Form
         _caption = "Choose what to send. It goes straight to them.";
         Arrange("Choose file", "Decline");
         _onPrimary = () => { Hide(); AnswerRequest?.Invoke(req); };
+        _onSecondary = Hide;
+        if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
+    }
+
+    public void OnWave(string alias, string fingerprint)
+    {
+        _session = null;
+        Reset();
+        _title = $"{alias} waved at you";
+        _lines = [];
+        _caption = "Wave back, or send them something.";
+        Arrange("Wave back", "Close");
+        _onPrimary = () => { Hide(); WaveBack?.Invoke(fingerprint, alias); };
         _onSecondary = Hide;
         if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
     }

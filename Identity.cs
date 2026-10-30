@@ -84,6 +84,8 @@ sealed class Settings
     public bool AutoQuiet { get; set; } = true;
     /// <summary>Names you gave devices, by fingerprint. Only you see them.</summary>
     public Dictionary<string, string> Nicknames { get; set; } = [];
+    /// <summary>Named sets of devices ("Design team") that you send to in one go.</summary>
+    public List<DeviceGroup> Groups { get; set; } = [];
     /// <summary>Pinned devices (fingerprints), listed first.</summary>
     public List<string> Favorites { get; set; } = [];
     /// <summary>We asked once on first run; after that it's the Settings link.</summary>
@@ -118,4 +120,11 @@ sealed class Settings
         Directory.CreateDirectory(Identity.DataDir);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(this));
     }
+}
+
+/// <summary>A saved set of devices, listed as one row in the panel.</summary>
+sealed class DeviceGroup
+{
+    public string Name { get; set; } = "";
+    public List<string> Members { get; set; } = [];   // fingerprints
 }
