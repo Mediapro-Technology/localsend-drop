@@ -1,9 +1,9 @@
 namespace LocalSendDrop;
 
 /// <summary>
-/// The corner drop zone. Collapsed it's a thin postal-yellow L in the chosen
-/// corner; dragging a file (or the mouse) into it opens a panel with one row
-/// per device. Dropping on a row sends. Everything is painted on one surface.
+/// The corner drop zone. Collapsed it's a thin accent-coloured L in the chosen
+/// corner; dragging a file (or the mouse) into it opens a flyout listing the
+/// devices nearby, styled like Windows 11's Quick Settings. Dropping on a row sends.
 /// </summary>
 sealed class DropPanel : Form
 {
@@ -49,7 +49,6 @@ sealed class DropPanel : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Ui.Ink;
         AllowDrop = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
 
@@ -60,11 +59,16 @@ sealed class DropPanel : Form
             r.Inflate(S(24), S(24));
             if (!r.Contains(Cursor.Position)) Collapse();
         };
+        // Stay above other always-on-top windows (Chrome's fullscreen video, picture-in-picture).
+        var onTop = new System.Windows.Forms.Timer { Interval = 2000 };
+        onTop.Tick += (_, _) => { if (IsHandleCreated && Visible) Ui.KeepOnTop(Handle); };
+        onTop.Start();
         _discovery.Changed += () => { if (IsHandleCreated) BeginInvoke(Reload); };
         History.Changed += () =>
         {
             if (IsHandleCreated) BeginInvoke(() => { _recent = History.Latest(5).ToList(); if (_expanded) { Measure(); Invalidate(); } });
         };
+        Ui.Changed += () => { if (IsHandleCreated) BeginInvoke(() => { Ui.Chrome(Handle, _expanded); Invalidate(); }); };
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => BeginInvoke(Reposition);
     }
 
@@ -85,7 +89,6 @@ sealed class DropPanel : Form
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        Ui.SetBorderColor(Handle, Ui.Line);
         Collapse();
     }
 
@@ -122,8 +125,8 @@ sealed class DropPanel : Form
         _scroll = 0;
         var screen = Settings.Current.TargetScreen.Bounds;
         var st = Settings.Current;
-        int len = S(140), t = S(4);
-        Ui.SetCorners(Handle, false);
+        int len = S(140), t = S(3);
+        Ui.Chrome(Handle, round: false);
         Bounds = new Rectangle(st.Right ? screen.Right - len : screen.Left, st.Bottom ? screen.Bottom - len : screen.Top, len, len);
         // An L hugging the corner: flinging a file at the corner always lands in it.
         var region = new Region(new Rectangle(0, st.Bottom ? len - t : 0, len, t));
@@ -138,10 +141,11 @@ sealed class DropPanel : Form
         var opening = !_expanded;
         _expanded = true;
         Region = null;
-        Ui.SetCorners(Handle, true);
+        Ui.Chrome(Handle);
         _devices = _discovery.Devices.ToList();
         _recent = History.Latest(5).ToList();
         Measure();
+        Ui.KeepOnTop(Handle);
         _leaveTimer.Start();
         Invalidate();
 
@@ -168,7 +172,8 @@ sealed class DropPanel : Form
         Invalidate();
     }
 
-    const int Width_ = 320, HeaderH = 82, RowH = 62, RowGap = 6, FooterH = 46, EmptyH = 132, RecentH = 44, RecentLabelH = 34;
+    // Windows 11 flyout metrics: 4 px list inset, 4 px item radius, 48 px footer.
+    const int Width_ = 340, HeaderH = 72, RowH = 56, FooterH = 48, EmptyH = 112, RecentH = 48, RecentLabelH = 40, Inset = 4;
 
     /// <summary>Recent transfers are hidden while you're holding files, to keep the targets clear.</summary>
     bool ShowRecent => _dragTitle == null && _pending == null && _recent.Count > 0;
@@ -177,9 +182,9 @@ sealed class DropPanel : Form
     void Measure()
     {
         var wa = Settings.Current.TargetScreen.WorkingArea;
-        int m = S(8), w = S(Width_);
-        var devicesH = _devices.Count == 0 ? S(EmptyH) : _devices.Count * S(RowH + RowGap) - S(RowGap) + S(4);
-        var contentH = devicesH + (ShowRecent ? S(RecentLabelH) + _recent.Count * S(RecentH) + S(4) : 0);
+        int m = S(12), w = S(Width_);
+        var devicesH = _devices.Count == 0 ? S(EmptyH) : _devices.Count * S(RowH) + S(8);
+        var contentH = devicesH + (ShowRecent ? S(RecentLabelH) + _recent.Count * S(RecentH) + S(8) : 0);
         var maxContent = wa.Height - 2 * m - S(HeaderH + FooterH);
         var listH = Math.Min(contentH, maxContent);
         var h = S(HeaderH) + listH + S(FooterH);
@@ -191,22 +196,22 @@ sealed class DropPanel : Form
         _list = new Rectangle(0, S(HeaderH), w, listH);
         _rows.Clear();
         for (var i = 0; i < _devices.Count; i++)
-            _rows.Add(new Rectangle(S(10), _list.Top + i * S(RowH + RowGap) - _scroll, w - S(20), S(RowH)));
+            _rows.Add(new Rectangle(S(Inset), _list.Top + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
 
         _recentRows.Clear();
         if (ShowRecent)
         {
-            _recentLabelY = _list.Top + devicesH + S(12) - _scroll;
+            _recentLabelY = _list.Top + devicesH - _scroll;
             for (var i = 0; i < _recent.Count; i++)
-                _recentRows.Add(new Rectangle(S(10), _recentLabelY + S(RecentLabelH - 12) + i * S(RecentH), w - S(20), S(RecentH)));
+                _recentRows.Add(new Rectangle(S(Inset), _recentLabelY + S(RecentLabelH) + i * S(RecentH), w - S(2 * Inset), S(RecentH)));
         }
-        _discard = _pending != null ? new Rectangle(w - S(52), S(16), S(34), S(34)) : Rectangle.Empty;
+        _discard = _pending != null ? new Rectangle(w - S(48), S(16), S(32), S(32)) : Rectangle.Empty;
 
         var fy = h - S(FooterH);
-        _gear = new Rectangle(w - S(46), fy + S(6), S(34), S(34));
-        _refresh = new Rectangle(w - S(82), fy + S(6), S(34), S(34));
-        var again = TextRenderer.MeasureText("Look again", Ui.BodyStrong());
-        _again = _devices.Count == 0 ? new Rectangle(S(20), _list.Top + S(92), again.Width, S(24)) : Rectangle.Empty;
+        _gear = new Rectangle(w - S(44), fy + S(8), S(32), S(32));
+        _refresh = new Rectangle(w - S(80), fy + S(8), S(32), S(32));
+        var again = TextRenderer.MeasureText("Search again", Ui.Body, Size.Empty, TextFormatFlags.NoPadding);
+        _again = _devices.Count == 0 ? new Rectangle(S(16), _list.Top + S(70), again.Width, S(24)) : Rectangle.Empty;
     }
 
     int RecentAt(Point p)
@@ -246,18 +251,19 @@ sealed class DropPanel : Form
         var g = e.Graphics;
         if (!_expanded)
         {
-            g.Clear(Ui.Postal);
+            g.Clear(Ui.Accent);
             return;
         }
-        g.Clear(Ui.Ink);
-        int w = ClientSize.Width, pad = S(20);
+        g.Clear(Ui.Flyout);
+        int w = ClientSize.Width, pad = S(16);
 
         // Header: what you're holding, or what to do.
-        var title = _dragTitle ?? "Send to";
-        var sub = _dragSub ?? (_devices.Count == 0 ? "Nobody to send to yet" : "Drop on a device, or click one to pick files");
-        Ui.DrawText(g, title, Ui.Display(15f), new Rectangle(pad, S(16), w - 2 * pad - (_pending != null ? S(40) : 0), S(30)), Ui.Text);
-        if (_pending != null) PaintIcon(g, _discard, "\uE711", "discard");
-        Ui.DrawText(g, sub, Ui.Body(9f), new Rectangle(pad, S(46), w - 2 * pad, S(20)), _dragTitle != null ? Ui.Postal : Ui.Muted);
+        var title = _dragTitle != null ? $"Send {_dragTitle}" : "Send to";
+        var sub = _dragSub ?? (_devices.Count == 0 ? "No devices found yet" : "Drop files on a device, or select one to choose files");
+        var titleW = w - 2 * pad - (_pending != null ? S(40) : 0);
+        Ui.DrawText(g, title, Ui.BodyStrong, new Rectangle(pad, S(16), titleW, S(20)), Ui.Text);
+        Ui.DrawText(g, sub, Ui.Caption, new Rectangle(pad, S(38), titleW, S(18)), Ui.TextSecondary);
+        if (_pending != null) PaintIcon(g, _discard, Ui.GlyphClose, "discard");
 
         g.SetClip(_list);
         if (_devices.Count == 0) PaintEmpty(g, pad, w);
@@ -265,38 +271,41 @@ sealed class DropPanel : Form
             if (_rows[i].IntersectsWith(_list)) PaintRow(g, _devices[i], _rows[i], i);
         if (ShowRecent)
         {
-            Ui.DrawText(g, "Recent", Ui.Body(9f), new Rectangle(pad, _recentLabelY, w - 2 * pad, S(18)), Ui.Muted);
+            using (var line = new Pen(Ui.Divider)) g.DrawLine(line, pad, _recentLabelY, w - pad, _recentLabelY);
+            Ui.DrawText(g, "Recent", Ui.BodyStrong, new Rectangle(pad, _recentLabelY + S(12), w - 2 * pad, S(20)), Ui.Text);
             for (var i = 0; i < _recentRows.Count; i++)
                 if (_recentRows[i].IntersectsWith(_list)) PaintRecent(g, _recent[i], _recentRows[i], i == _hoverRecent);
         }
         g.ResetClip();
 
-        // Footer: who you are, refresh, settings.
+        // Footer bar, like Quick Settings: who you are, refresh, settings.
         var fy = ClientSize.Height - S(FooterH);
-        using (var line = new Pen(Ui.Line)) g.DrawLine(line, 0, fy, w, fy);
-        Ui.DrawText(g, _refreshing ? "Looking for devices…" : $"You're {_id.Alias}", Ui.Body(9f),
-            new Rectangle(pad, fy, _refresh.Left - pad - S(4), S(FooterH)), Ui.Muted);
-        PaintIcon(g, _refresh, "", "refresh");
-        PaintIcon(g, _gear, "", "gear");
+        using (var b = new SolidBrush(Ui.Base)) g.FillRectangle(b, 0, fy, w, S(FooterH));
+        using (var line = new Pen(Ui.Divider)) g.DrawLine(line, 0, fy, w, fy);
+        Ui.DrawText(g, _refreshing ? "Searching for devices…" : _id.Alias, Ui.Caption,
+            new Rectangle(pad, fy, _refresh.Left - pad - S(4), S(FooterH)), Ui.TextSecondary);
+        PaintIcon(g, _refresh, Ui.GlyphRefresh, "refresh");
+        PaintIcon(g, _gear, Ui.GlyphSettings, "gear");
     }
 
     void PaintRecent(Graphics g, HistoryEntry h, Rectangle r, bool hot)
     {
-        if (hot) Ui.FillRound(g, Ui.InkHover, r, S(8));
-        var icon = new Rectangle(r.Left + S(10), r.Top, S(24), r.Height);
-        var glyph = h.Received ? "\uE896" : "\uE898"; // download / upload arrows
-        Ui.DrawText(g, glyph, Ui.Glyph(10f), icon, !h.Ok ? Ui.Error : h.Received ? Ui.Postal : Ui.Muted,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-        var x = icon.Right + S(10);
-        var tw = r.Right - x - S(10);
-        Ui.DrawText(g, h.Title, Ui.BodyStrong(9.5f), new Rectangle(x, r.Top + S(4), tw, S(20)), Ui.Text);
+        if (hot) Ui.FillRound(g, Ui.SubtleHover, r, S(4));
+        var icon = new Rectangle(r.Left + S(12), r.Top, S(20), r.Height);
+        Ui.DrawIcon(g, h.Received ? Ui.GlyphDown : Ui.GlyphUp, 11f, icon, h.Ok ? Ui.TextSecondary : Ui.Error);
+        var x = icon.Right + S(12);
+        var tw = r.Right - x - S(12);
+        var when = History.Ago(h.Time);
+        var whenW = TextRenderer.MeasureText(when, Ui.Caption, Size.Empty, TextFormatFlags.NoPadding).Width;
+        Ui.DrawText(g, h.Title, Ui.Body, new Rectangle(x, r.Top + S(5), tw - whenW - S(8), S(20)), Ui.Text);
+        Ui.DrawText(g, when, Ui.Caption, new Rectangle(r.Right - S(12) - whenW, r.Top + S(5), whenW, S(20)), Ui.TextTertiary);
         var who = $"{(h.Received ? "From" : "To")} {h.Peer}";
-        var sub = h.Ok ? $"{who}, {History.Ago(h.Time)}" : $"{who}: {h.Error ?? "failed"}";
+        var sub = h.Ok ? who : $"{who}: {h.Error ?? "failed"}";
         if (hot)
-            sub = h.Received && h.Ok ? "Click to open, right-click to show in folder"
-                : !h.Received && !h.Ok && CanRetry(h) ? "Click to try again"
-                : "Click to show in folder";
-        Ui.DrawText(g, sub, Ui.Body(8.5f), new Rectangle(x, r.Top + S(23), tw, S(17)), h.Ok || hot ? Ui.Muted : Ui.Error);
+            sub = h.Received && h.Ok ? "Select to open, right-click to show in folder"
+                : !h.Received && !h.Ok && CanRetry(h) ? "Select to try again"
+                : "Select to show in folder";
+        Ui.DrawText(g, sub, Ui.Caption, new Rectangle(x, r.Top + S(25), tw, S(18)), h.Ok || hot ? Ui.TextSecondary : Ui.Error);
     }
 
     bool CanRetry(HistoryEntry h) =>
@@ -305,55 +314,43 @@ sealed class DropPanel : Form
 
     void PaintIcon(Graphics g, Rectangle r, string glyph, string key)
     {
-        if (_hoverIcon == key) Ui.FillRound(g, Ui.InkHover, r, r.Height / 2f);
-        Ui.DrawText(g, glyph, Ui.Glyph(11f), r, _hoverIcon == key ? Ui.Text : Ui.Muted,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        if (_hoverIcon == key) Ui.FillRound(g, Ui.SubtleHover, r, S(4));
+        Ui.DrawIcon(g, glyph, 12f, r, Ui.Text);
     }
 
     void PaintEmpty(Graphics g, int pad, int w)
     {
         var y = _list.Top + S(8);
-        Ui.DrawText(g, "No one nearby", Ui.Display(12f), new Rectangle(pad, y, w - 2 * pad, S(24)), Ui.Text);
-        TextRenderer.DrawText(g, "Open LocalSend Drop on another PC, or LocalSend on a phone, on the same network.",
-            Ui.Body(9f), new Rectangle(pad, y + S(28), w - 2 * pad, S(48)), Ui.Muted,
+        Ui.DrawText(g, "No devices nearby", Ui.Body, new Rectangle(pad, y, w - 2 * pad, S(20)), Ui.Text);
+        TextRenderer.DrawText(g, "Other PCs need LocalSend Drop open, phones need LocalSend, and both need to be on this network.",
+            Ui.Caption, new Rectangle(pad, y + S(24), w - 2 * pad, S(36)), Ui.TextSecondary,
             TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
-        Ui.DrawText(g, "Look again", Ui.BodyStrong(), _again, _hoverIcon == "again" ? Ui.Text : Ui.Postal);
+        Ui.DrawText(g, "Search again", Ui.Body, _again, _hoverIcon == "again" ? Ui.TextSecondary : Ui.AccentText);
     }
 
     void PaintRow(Graphics g, Device d, Rectangle r, int i)
     {
         _sending.TryGetValue(d.Fingerprint, out var st);
         var target = i == _dragOver;
-        var bg = target ? Ui.Postal : i == _hover ? Ui.InkHover : Ui.Ink2;
-        Ui.FillRound(g, bg, r, S(10));
+        if (target || i == _hover) Ui.FillRound(g, Ui.SubtleHover, r, S(4));
+        // Windows 11 selection indicator: a short accent pill on the left edge.
+        if (target) Ui.FillRound(g, Ui.Accent, new RectangleF(r.Left, r.Top + (r.Height - S(16)) / 2f, S(3), S(16)), S(2) / 2f + 0.5f);
 
-        var avatar = new Rectangle(r.Left + S(12), r.Top + (r.Height - S(38)) / 2, S(38), S(38));
-        var textR = new Rectangle(avatar.Right + S(12), r.Top, r.Right - avatar.Right - S(24), r.Height);
-        var name = new Rectangle(textR.Left, r.Top + S(11), textR.Width, S(22));
-        var subR = new Rectangle(textR.Left, r.Top + S(33), textR.Width, S(18));
+        var icon = new Rectangle(r.Left + S(12), r.Top, S(24), r.Height);
+        Ui.DrawIcon(g, Ui.DeviceGlyph(d), 14f, icon, Ui.Text);
 
+        var x = icon.Right + S(12);
+        var tw = r.Right - x - S(12);
         string sub;
-        Color subColor;
-        if (target) { sub = "Release to send"; subColor = Ui.Ink; }
-        else if (st != null) { sub = st.Status; subColor = st.Error ? Ui.Error : st.Ok ? Ui.Postal : Ui.Muted; }
-        else { sub = Ui.DeviceLabel(d); subColor = Ui.Muted; }
+        Color subColor = Ui.TextSecondary;
+        if (target) { sub = "Release to send"; subColor = Ui.AccentText; }
+        else if (st != null) { sub = st.Status; if (st.Error) subColor = Ui.Error; else if (st.Ok) subColor = Ui.Success; }
+        else sub = Ui.DeviceLabel(d);
 
-        Ui.Monogram(g, avatar, d.Alias, d.Fingerprint, st is { Done: true, Ok: true });
-        Ui.DrawText(g, d.Alias, Ui.Display(11.5f), name, target ? Ui.Ink : Ui.Text);
-        Ui.DrawText(g, sub, Ui.Body(9f), subR, subColor);
-
-        // Sending: the row fills with yellow like a tube; text over the fill turns ink.
-        if (st?.Fraction is double f && f > 0)
-        {
-            var fill = new Rectangle(r.Left, r.Top, (int)(r.Width * f), r.Height);
-            var old = g.Clip;
-            g.SetClip(fill, System.Drawing.Drawing2D.CombineMode.Intersect);
-            Ui.FillRound(g, Ui.Postal, r, S(10));
-            Ui.Monogram(g, avatar, d.Alias, d.Fingerprint);
-            Ui.DrawText(g, d.Alias, Ui.Display(11.5f), name, Ui.Ink);
-            Ui.DrawText(g, sub, Ui.Body(9f), subR, Ui.Ink);
-            g.Clip = old;
-        }
+        Ui.DrawText(g, d.Alias, Ui.Body, new Rectangle(x, r.Top + S(9), tw, S(20)), Ui.Text);
+        Ui.DrawText(g, sub, Ui.Caption, new Rectangle(x, r.Top + S(29), tw, S(18)), subColor);
+        if (st?.Fraction is double f)
+            Ui.Progress(g, new Rectangle(x, r.Bottom - S(8), tw, S(4)), f, DeviceDpi / 96f);
     }
 
     // ---- mouse ----
@@ -407,7 +404,7 @@ sealed class DropPanel : Form
     {
         base.OnMouseWheel(e);
         if (!_expanded) return;
-        _scroll -= Math.Sign(e.Delta) * S(RowH + RowGap);
+        _scroll -= Math.Sign(e.Delta) * S(RowH);
         Measure();
         Invalidate();
     }
@@ -531,7 +528,7 @@ sealed class DropPanel : Form
 
         var progress = new Progress<(string text, double? fraction)>(p =>
         {
-            st.Status = p.fraction == null ? $"Waiting for {d.Alias} to accept" : $"{p.text}. Click to cancel";
+            st.Status = p.fraction == null ? $"Waiting for {d.Alias} to accept" : $"{p.text}. Select to cancel";
             st.Fraction = p.fraction;
             Invalidate();
         });

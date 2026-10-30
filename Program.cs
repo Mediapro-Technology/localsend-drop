@@ -13,6 +13,7 @@ static class Program
     static int Main(string[] args)
     {
         if (args.Contains("--list")) return ListDevices();
+        if (args.Length == 2 && args[0] == "--snapshot") return Snapshot.Run(args[1]);
         if (args.Length == 3 && args[0] == "--send") return SendCli(args[1], args[2]);
 
         // Explorer's "Send with LocalSend Drop" passes: --share "<path>"
@@ -112,6 +113,8 @@ static class Program
         async Task<bool> InstallPackage(bool mayPrompt)
         {
             if (Packaging.IsPackaged || !Packaging.Supported) return false;
+            // A development build (run from bin\) must not replace the installed copy.
+            if (!mayPrompt && Environment.ProcessPath!.Contains(@"\bin\", StringComparison.OrdinalIgnoreCase)) return false;
             if (mayPrompt) Notify("Installing LocalSend Drop… approve the Windows prompt", false);
             string? error;
             try { error = await Packaging.MigrateAsync(mayPrompt); }
@@ -139,9 +142,20 @@ static class Program
         void ShowSettings()
         {
             if (open != null) { open.Activate(); return; }
-            using var f = open = new SettingsForm(IsAutostart(), () => InstallPackage(mayPrompt: true));
-            var ok = f.ShowDialog() == DialogResult.OK;
-            open = null;
+            SettingsForm f;
+            bool ok;
+            try
+            {
+                f = open = new SettingsForm(IsAutostart(), () => InstallPackage(mayPrompt: true));
+                ok = f.ShowDialog() == DialogResult.OK;
+            }
+            catch (Exception ex)
+            {
+                File.AppendAllText(Path.Combine(Identity.DataDir, "error.log"), $"{DateTime.Now:s} Settings: {ex}\n");
+                Notify($"Couldn't open Settings: {ex.Message}", true);
+                return;
+            }
+            finally { open?.Dispose(); open = null; }
             if (!ok) return;
             var s = Settings.Current;
             s.Alias = f.DeviceName == Environment.MachineName ? null : f.DeviceName;
