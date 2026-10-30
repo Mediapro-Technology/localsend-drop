@@ -58,11 +58,33 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         public readonly List<string> Saved = [];
         public long Received;
         public HttpContext? Current;   // the upload in flight, aborted on cancel
+        /// <summary>Files being written: where to, and how much has arrived (kept across reconnects).</summary>
+        public readonly Dictionary<string, Partial> Partials = [];
+        /// <summary>Running while we wait for a dropped sender to reconnect.</summary>
+        public CancellationTokenSource? Grace;
     }
 
-    static int FreePort()
+    sealed class Partial
     {
-        for (var port = 53317; port < 53340; port++)
+        public required string Target, Part;
+        public long Written;
+        public int Attempt;         // newest upload request for this file; older ones stand down
+        public bool Writing;
+    }
+
+    /// <summary>Testing: LSDROP_TEST_DROP_AT=bytes makes the receiver cut the first upload there, once.</summary>
+    static readonly long TestDropAt = long.TryParse(Environment.GetEnvironmentVariable("LSDROP_TEST_DROP_AT"), out var at) ? at : -1;
+    static int _testDropped;
+
+    /// <summary>How long a dropped transfer may take to reconnect before it's given up.</summary>
+    static readonly TimeSpan ResumeWindow = TimeSpan.FromMinutes(2);
+
+    /// <summary>The sender lost the connection; the transfer resumes if it comes back.</summary>
+    public event Action<string>? Reconnecting;
+
+    static int FreePort(int from = 53317)
+    {
+        for (var port = from; port < 53340; port++)
         {
             try
             {
@@ -79,12 +101,15 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
     public async Task StartAsync()
     {
         Port = FreePort();
+        // Plain HTTP for QR shares: phones open it in a browser without certificate warnings.
+        QrShare.Port = FreePort(Math.Max(53330, Port + 1));
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory });
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(o =>
         {
             o.Limits.MaxRequestBodySize = null;       // files can be any size
             o.Limits.MinRequestBodyDataRate = null;   // slow phones on bad Wi-Fi
+            o.Listen(IPAddress.Any, QrShare.Port);
             o.Listen(IPAddress.Any, Port, l => l.UseHttps(h =>
             {
                 h.ServerCertificate = id.Certificate;
@@ -103,6 +128,10 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         app.MapPost("/api/localsend/v2/prepare-upload", (Func<HttpContext, Task<IResult>>)(ctx => PrepareUpload(ctx)));
         app.MapPost("/api/localsend/v2/upload", (Func<HttpContext, Task<IResult>>)(ctx => Upload(ctx)));
         app.MapPost("/api/localsend/v2/cancel", (Func<HttpContext, IResult>)(ctx => Cancel(ctx)));
+        app.MapGet("/s/{token}", (Func<string, IResult>)(token => QrShare.Page(token)));
+        app.MapGet("/s/{token}/f/{index:int}", (Func<string, int, IResult>)((token, index) => QrShare.File(token, index)));
+        app.MapGet("/s/{token}/all.zip", (Func<HttpContext, string, Task>)((ctx, token) => QrShare.All(ctx, token)));
+        app.MapGet("/api/localsend-drop/v1/resume", (Func<HttpContext, IResult>)(ctx => ResumeOffset(ctx)));
         app.MapPost("/api/localsend-drop/v1/request", (Func<HttpContext, Task<IResult>>)(ctx => Request(ctx)));
 
         await app.StartAsync();
@@ -210,12 +239,20 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         });
     }
 
+    /// <summary>
+    /// Receives one file. With ?offset=N (LocalSend Drop senders, after a dropped
+    /// connection) it continues the partial file from byte N instead of starting over.
+    /// </summary>
     async Task<IResult> Upload(HttpContext ctx)
     {
         var q = ctx.Request.Query;
         string sessionId = q["sessionId"]!, fileId = q["fileId"]!, token = q["token"]!;
+        long.TryParse(q["offset"], out var offset);
         Session? s;
         IncomingFile file;
+        Partial partial;
+        int attempt;
+        HttpContext? stale;
         lock (_lock)
         {
             s = _session;
@@ -223,23 +260,50 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
                 !s.Files.TryGetValue(fileId ?? "", out var entry) || entry.Token != token || s.Done.Contains(fileId!))
                 return Results.StatusCode(403);
             file = entry.File;
+            if (!s.Partials.TryGetValue(fileId!, out partial!))
+            {
+                var target = SafeTarget(file.FileName);
+                s.Partials[fileId!] = partial = new Partial { Target = target, Part = target + ".part" };
+            }
+            attempt = ++partial.Attempt;
+            stale = partial.Writing ? s.Current : null;   // a half-dead earlier connection
             s.Current = ctx;
+            s.Grace?.Cancel();
+            s.Grace = null;
         }
+        try { stale?.Abort(); } catch { }
 
-        var target = SafeTarget(file.FileName);
-        var part = target + ".part";
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            await using (var fs = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, true))
+            Directory.CreateDirectory(Path.GetDirectoryName(partial.Target)!);
+            FileStream? fs = null;
+            // The stale connection may still hold the file for a moment.
+            for (var i = 0; fs == null; i++)
             {
+                try { fs = new FileStream(partial.Part, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None, 1 << 16, true); }
+                catch (IOException) when (i < 20) { await Task.Delay(150, ctx.RequestAborted); }
+            }
+            await using (fs)
+            {
+                offset = Math.Clamp(offset, 0, Math.Min(fs.Length, partial.Written));
+                lock (_lock)
+                {
+                    s.Received -= partial.Written - offset;   // anything past the offset is sent again
+                    partial.Written = offset;
+                    partial.Writing = true;
+                }
+                fs.SetLength(offset);
+                fs.Seek(offset, SeekOrigin.Begin);
+
                 var buf = new byte[1 << 16];
                 int n;
                 long lastReport = 0;
                 while ((n = await ctx.Request.Body.ReadAsync(buf, ctx.RequestAborted)) > 0)
                 {
                     await fs.WriteAsync(buf.AsMemory(0, n), ctx.RequestAborted);
-                    var received = Interlocked.Add(ref s.Received, n);
+                    long received;
+                    lock (_lock) { partial.Written += n; received = s.Received += n; }
+                    if (TestDropAt > 0 && partial.Written > TestDropAt && Interlocked.Exchange(ref _testDropped, 1) == 0) ctx.Abort();
                     if (received - lastReport > 256 * 1024)
                     {
                         lastReport = received;
@@ -247,20 +311,42 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
                     }
                 }
             }
-            File.Move(part, target);
+            if (partial.Written < file.Size) throw new IOException("The connection closed before the file was complete");
+            File.Move(partial.Part, partial.Target);
         }
         catch (Exception ex)
         {
-            try { File.Delete(part); } catch { }
-            End(s, ex is OperationCanceledException or IOException ? "Transfer interrupted" : ex.Message);
+            bool superseded, alive;
+            lock (_lock)
+            {
+                partial.Writing = false;
+                superseded = partial.Attempt != attempt;   // a reconnect already took over
+                alive = _session == s;
+            }
+            if (superseded || !alive) return Results.StatusCode(500);
+
+            if (ex is OperationCanceledException or IOException or BadHttpRequestException)
+            {
+                // Keep what arrived and give the sender a couple of minutes to come back.
+                var grace = new CancellationTokenSource();
+                lock (_lock) { s.Grace?.Cancel(); s.Grace = grace; }
+                Reconnecting?.Invoke(sessionId);
+                _ = Task.Delay(ResumeWindow, grace.Token).ContinueWith(t =>
+                {
+                    if (!t.IsCanceled) End(s, "The connection was lost");
+                }, TaskScheduler.Default);
+            }
+            else End(s, ex.Message);
             return Results.StatusCode(500);
         }
 
         bool all;
         lock (_lock)
         {
+            partial.Writing = false;
+            s.Partials.Remove(fileId!);
             s.Done.Add(fileId!);
-            s.Saved.Add(target);
+            s.Saved.Add(partial.Target);
             all = s.Done.Count == s.Files.Count;
             if (all && _session == s) _session = null;
         }
@@ -271,6 +357,21 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
             Ended?.Invoke(s.Request, s.Saved, null);
         }
         return Results.Ok();
+    }
+
+    /// <summary>LocalSend Drop extension: how much of a file already arrived, to resume from.</summary>
+    IResult ResumeOffset(HttpContext ctx)
+    {
+        var q = ctx.Request.Query;
+        lock (_lock)
+        {
+            var s = _session;
+            if (s == null || s.Request.SessionId != q["sessionId"] || s.Request.SenderIp != RemoteIp(ctx) ||
+                !s.Files.TryGetValue(q["fileId"].ToString(), out var entry) || entry.Token != q["token"])
+                return Results.NotFound();
+            var written = s.Partials.TryGetValue(q["fileId"].ToString(), out var p) ? p.Written : 0;
+            return Results.Json(new { offset = written });
+        }
     }
 
     IResult Cancel(HttpContext ctx)
@@ -285,7 +386,15 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
     void End(Session s, string reason)
     {
         lock (_lock) { if (_session == s) _session = null; else return; }
+        s.Grace?.Cancel();
         try { s.Current?.Abort(); } catch { }
+        // Partial files are useless once the transfer is over.
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(1000);
+            foreach (var part in s.Partials.Values)
+                try { File.Delete(part.Part); } catch { }
+        });
         Failed?.Invoke(s.Request.SessionId, reason);
         if (s.Files.Count > 0) Ended?.Invoke(s.Request, s.Saved, reason);
     }

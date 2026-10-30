@@ -255,6 +255,14 @@ sealed class IncomingCard : Form
         Invalidate();
     }
 
+    /// <summary>The sender dropped off; the transfer continues if it reconnects.</summary>
+    public void OnReconnecting(string session)
+    {
+        if (session != _session || _fraction < 0) return;
+        _caption = "Connection lost. Waiting for it to come back…";
+        Invalidate();
+    }
+
     public void OnFinished(string session, List<string> saved)
     {
         if (session != _session) return;

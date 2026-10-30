@@ -23,18 +23,21 @@ sealed class DropPanel : Form
     string? _pendingText;             // copied text (Ctrl+Alt+S), waiting for a device
     bool Holding => _pending != null || _pendingText != null;
     const int Everyone = -2;          // RowAt() result for the "Everyone nearby" row
+    const int QrRow = -3;             // RowAt() result for "Phone without the app"
     List<HistoryEntry> _recent = [];
     int _hoverRecent = -1;
 
     // layout (device pixels), rebuilt in Measure()
     readonly List<Rectangle> _rows = [];
     readonly List<Rectangle> _recentRows = [];
-    Rectangle _gear, _refresh, _again, _list, _discard, _clear, _everyone, _quiet;
+    Rectangle _gear, _refresh, _again, _list, _discard, _clear, _everyone, _quiet, _qr;
     int _recentLabelY;
 
     public Action? OpenSettings;
     /// <summary>Footer button: turns Do not disturb on or off.</summary>
     public Action? ToggleQuiet;
+    /// <summary>"Phone without the app": files (with paths) and/or text to share by QR code.</summary>
+    public Action<List<SendItem>, string?>? ShareByQr;
     /// <summary>Device menu: open the conversation, or ask for a file.</summary>
     public Action<Device>? OpenNotes, AskForFile;
 
@@ -268,7 +271,8 @@ sealed class DropPanel : Form
         var wa = Settings.Current.TargetScreen.WorkingArea;
         int m = S(12), w = S(Width_);
         var everyoneH = _devices.Count >= 2 ? S(RowH) : 0;
-        var devicesH = _devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH) + S(8);
+        var listedH = _devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH);
+        var devicesH = listedH + S(RowH) + S(8);   // + "Phone without the app"
         var contentH = devicesH + (ShowRecent ? S(RecentLabelH) + _recent.Count * S(RecentH) + S(8) : 0);
         var maxContent = wa.Height - 2 * m - S(HeaderH + FooterH);
         var listH = Math.Min(contentH, maxContent);
@@ -284,6 +288,7 @@ sealed class DropPanel : Form
         for (var i = 0; i < _devices.Count; i++)
             _rows.Add(new Rectangle(S(Inset), _list.Top + everyoneH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
 
+        _qr = new Rectangle(S(Inset), _list.Top + listedH - _scroll, w - S(2 * Inset), S(RowH));
         _recentRows.Clear();
         _clear = Rectangle.Empty;
         if (ShowRecent)
@@ -338,6 +343,7 @@ sealed class DropPanel : Form
     {
         if (!_list.Contains(p)) return -1;
         if (_everyone.Contains(p)) return Everyone;
+        if (_qr.Contains(p)) return QrRow;
         for (var i = 0; i < _rows.Count; i++) if (_rows[i].Contains(p)) return i;
         return -1;
     }
@@ -366,6 +372,7 @@ sealed class DropPanel : Form
         g.SetClip(_list);
         if (_devices.Count == 0) PaintEmpty(g, pad, w);
         if (!_everyone.IsEmpty) PaintEveryone(g, _everyone);
+        PaintQrRow(g, _qr);
         for (var i = 0; i < _devices.Count; i++)
             if (_rows[i].IntersectsWith(_list)) PaintRow(g, _devices[i], _rows[i], i);
         if (ShowRecent)
@@ -449,6 +456,19 @@ sealed class DropPanel : Form
         var x = icon.Right + S(12);
         Ui.DrawText(g, "Everyone nearby", Ui.Body, new Rectangle(x, r.Top + S(9), r.Right - x - S(12), S(20)), Ui.Text);
         Ui.DrawText(g, target ? $"Release to send to all {_devices.Count}" : $"Send to all {_devices.Count} devices at once", Ui.Caption,
+            new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
+    }
+
+    void PaintQrRow(Graphics g, Rectangle r)
+    {
+        var target = _dragOver == QrRow;
+        if (target || _hover == QrRow) Ui.FillRound(g, Ui.SubtleHover, r, S(4));
+        if (target) Ui.FillRound(g, Ui.Accent, new RectangleF(r.Left, r.Top + (r.Height - S(16)) / 2f, S(3), S(16)), S(2) / 2f + 0.5f);
+        var icon = new Rectangle(r.Left + S(12), r.Top, S(24), r.Height);
+        Ui.DrawIcon(g, Ui.GlyphQr, 14f, icon, Ui.Text);
+        var x = icon.Right + S(12);
+        Ui.DrawText(g, "Phone without the app", Ui.Body, new Rectangle(x, r.Top + S(9), r.Right - x - S(12), S(20)), Ui.Text);
+        Ui.DrawText(g, target ? "Release to show a QR code" : "Show a QR code to download in a browser", Ui.Caption,
             new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
     }
 
@@ -568,6 +588,7 @@ sealed class DropPanel : Form
         if (_refresh.Contains(e.Location) || _again.Contains(e.Location)) { Refresh_(); return; }
         var i = RowAt(e.Location);
         if (i == Everyone) OnEveryoneClick();
+        else if (i == QrRow) OnQrClick();
         else if (i >= 0) OnRowClick(_devices[i]);
     }
 
@@ -664,6 +685,13 @@ sealed class DropPanel : Form
         _dragOver = -1;
         _dragTitle = _dragSub = null;
         Invalidate();
+        if (i == QrRow)
+        {
+            var dropped = e.Data!.GetData(DataFormats.FileDrop) as string[];
+            var droppedText = dropped == null ? e.Data.GetData(DataFormats.UnicodeText) as string : null;
+            BeginInvoke(() => { ShareByQr?.Invoke(dropped != null ? Sender.FromPaths(dropped) : [], droppedText); Collapse(); });
+            return;
+        }
         var targets = i == Everyone ? _devices.ToList() : i >= 0 && i < _devices.Count ? [_devices[i]] : new List<Device>();
         if (targets.Count == 0) return;
 
@@ -719,6 +747,25 @@ sealed class DropPanel : Form
         _dragTitle = _dragSub = null;
         Measure();
         return result;
+    }
+
+    void OnQrClick()
+    {
+        if (Holding)
+        {
+            var text = _pendingText;
+            var (items, _) = TakePending();
+            ShareByQr?.Invoke(items.Where(i => i.Path != null).ToList(), text);
+            Collapse();
+            return;
+        }
+        _modal = true;
+        try
+        {
+            using var dlg = new OpenFileDialog { Multiselect = true, Title = "Share with a QR code" };
+            if (dlg.ShowDialog(this) == DialogResult.OK) { ShareByQr?.Invoke(Sender.FromPaths(dlg.FileNames), null); Collapse(); }
+        }
+        finally { _modal = false; }
     }
 
     void OnEveryoneClick()
@@ -777,7 +824,9 @@ sealed class DropPanel : Form
 
         var progress = new Progress<(string text, double? fraction)>(p =>
         {
-            st.Status = p.fraction == null ? $"Waiting for {NameOf(d)} to accept" : $"Sending {p.text}";
+            st.Status = p.fraction == null ? $"Waiting for {NameOf(d)} to accept"
+                : p.text == "Reconnecting…" ? "Connection lost. Reconnecting…"
+                : $"Sending {p.text}";
             st.Fraction = p.fraction;
             Invalidate();
         });

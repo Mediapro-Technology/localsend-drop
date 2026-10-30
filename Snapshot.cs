@@ -66,6 +66,13 @@ static class Snapshot
                 Notes.Add("A1", fromMe: true, "Sure, sending it now. It's the v3 with the new stairs.");
                 Notes.Add("A1", fromMe: false, "Got it, thanks!");
             }
+            using (var qr = new QrForm(QrShare.Start("Rizwan PC", Directory.GetFiles(folder, "panel-*.png").Take(2)
+                       .Select(f => new SendItem(Path.GetFileName(f), f, null)).ToList(), null)) { Opacity = 0 })
+            {
+                qr.Show();
+                Save(qr, Path.Combine(folder, $"qr-{mode}.png"));
+            }
+
             using (var notes = new NotesForm("A1", "HARSHID-PC", _ => Task.FromResult<string?>(null)) { Opacity = 0 })
             {
                 notes.Show();
@@ -81,6 +88,22 @@ static class Snapshot
                 Save(settings, Path.Combine(folder, $"settings-bottom-{mode}.png"));
             }
         }
+        return 0;
+    }
+
+    /// <summary>Testing: `--qr-serve <file>...` shares files by QR link, prints it, serves for a minute.</summary>
+    public static int QrServe(string[] paths)
+    {
+        var id = Identity.LoadOrCreate();
+        using var discovery = new Discovery(id);
+        var server = new Server(id, discovery);
+        server.StartAsync().GetAwaiter().GetResult();
+        var share = QrShare.Start(id.Alias, Sender.FromPaths(paths), "Hello from the QR test");
+        Console.WriteLine(QrShare.Url(share));
+        Console.Out.Flush();
+        Thread.Sleep(60_000);
+        Console.WriteLine($"downloads: {share.Downloads}");
+        server.DisposeAsync().AsTask().Wait(2000);
         return 0;
     }
 

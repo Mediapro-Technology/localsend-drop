@@ -10,7 +10,7 @@
     <RootNamespace>LocalSendDrop</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>2.2.1</Version>
+    <Version>2.2.2</Version>
     <!-- No designer is used, so designer-serialization warnings do not apply. -->
     <NoWarn>$(NoWarn);WFO1000;CS8765</NoWarn>
 
@@ -31,6 +31,10 @@
   <ItemGroup>
     <!-- Kestrel: the HTTPS receiver. -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="QRCoder" Version="1.8.1" />
   </ItemGroup>
 
 </Project>

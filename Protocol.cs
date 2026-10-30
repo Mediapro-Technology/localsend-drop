@@ -260,25 +260,59 @@ static class Sender
             foreach (var (fileId, token) in tokens)
             {
                 var item = byId[fileId];
-                var url = $"{target.BaseUrl}/upload?sessionId={Uri.EscapeDataString(sessionId)}" +
-                          $"&fileId={Uri.EscapeDataString(fileId)}&token={Uri.EscapeDataString(token)}";
-                await using var fs = new FileStream(item.Path!, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, true);
-                var baseDone = done;
-                var content = new StreamContent(new ProgressStream(fs, read =>
+                var query = $"sessionId={Uri.EscapeDataString(sessionId)}&fileId={Uri.EscapeDataString(fileId)}&token={Uri.EscapeDataString(token)}";
+                long offset = 0;
+                DateTime? lostAt = null;
+                while (true)
                 {
-                    var sent = baseDone + read;
-                    var pct = sent * 100 / Math.Max(total, 1);
-                    if (pct == Interlocked.Exchange(ref lastPct, pct)) return;
-                    progress.Report((Rate.Describe(sent, total, clock.Elapsed), pct / 100.0));
-                }), 1 << 16);
-                content.Headers.ContentLength = item.Size;
-                content.Headers.ContentType = new("application/octet-stream");
+                    // A dead Wi-Fi link can hang a request for minutes; treat 20 s without progress as lost.
+                    using var stall = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    var lastProgress = DateTime.UtcNow;
+                    using var watchdog = new System.Threading.Timer(_ =>
+                    {
+                        if (DateTime.UtcNow - lastProgress > TimeSpan.FromSeconds(20)) stall.Cancel();
+                    }, null, 5000, 5000);
+                    try
+                    {
+                        await using var fs = new FileStream(item.Path!, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, true);
+                        fs.Seek(offset, SeekOrigin.Begin);
+                        var baseDone = done + offset;
+                        var content = new StreamContent(new ProgressStream(fs, read =>
+                        {
+                            lastProgress = DateTime.UtcNow;
+                            var sent = baseDone + read;
+                            var pct = sent * 100 / Math.Max(total, 1);
+                            if (pct == Interlocked.Exchange(ref lastPct, pct)) return;
+                            progress.Report((Rate.Describe(sent, total, clock.Elapsed), pct / 100.0));
+                        }), 1 << 16);
+                        content.Headers.ContentLength = item.Size - offset;
+                        content.Headers.ContentType = new("application/octet-stream");
 
-                HttpResponseMessage up;
-                try { up = await client.PostAsync(url, content, ct); }
-                catch (HttpRequestException) { throw new SendFailed("Connection lost"); }
-                if (!up.IsSuccessStatusCode) throw new SendFailed($"Upload failed ({(int)up.StatusCode})");
+                        var url = $"{target.BaseUrl}/upload?{query}" + (offset > 0 ? $"&offset={offset}" : "");
+                        var up = await client.PostAsync(url, content, stall.Token);
+                        if (!up.IsSuccessStatusCode) throw new SendFailed($"Upload failed ({(int)up.StatusCode})");
+                        break;
+                    }
+                    catch (Exception e) when (!ct.IsCancellationRequested &&
+                                              e is HttpRequestException or IOException or OperationCanceledException)
+                    {
+                        // Lost the connection: wait for it to come back and continue where it stopped.
+                        lostAt ??= DateTime.UtcNow;
+                        if (DateTime.UtcNow - lostAt > TimeSpan.FromMinutes(2)) throw new SendFailed("Connection lost");
+                        progress.Report(("Reconnecting…", lastPct / 100.0));
+                        long? resumeAt;
+                        while (true)
+                        {
+                            await Task.Delay(3000, ct);
+                            resumeAt = await ResumeOffset(id, target, query);
+                            if (resumeAt != -1) break;   // reachable again (or can't resume)
+                            if (DateTime.UtcNow - lostAt > TimeSpan.FromMinutes(2)) throw new SendFailed("Connection lost");
+                        }
+                        offset = resumeAt ?? throw new SendFailed("Connection lost");
+                    }
+                }
                 done += item.Size;
+                lastPct = -1;
             }
         }
         catch
@@ -291,6 +325,23 @@ static class Sender
         }
 
         return tokens.Count == 1 ? "Sent" : $"Sent {tokens.Count} files";
+    }
+
+    /// <summary>
+    /// How much of the file the receiver already has (LocalSend Drop only). Null when the
+    /// receiver can't resume (LocalSend, or the session is gone); -1 while it's unreachable.
+    /// </summary>
+    static async Task<long?> ResumeOffset(Identity id, Device target, string query)
+    {
+        try
+        {
+            using var c = LsHttp.Create(id, LsHttp.PinFor(target), TimeSpan.FromSeconds(5));
+            var resp = await c.GetAsync($"{target.Root}/api/localsend-drop/v1/resume?{query}");
+            if (!resp.IsSuccessStatusCode) return null;
+            var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+            return body.GetProperty("offset").GetInt64();
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return -1; }
     }
 
     sealed class ProgressStream(Stream inner, Action<long> onRead) : Stream

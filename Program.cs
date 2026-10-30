@@ -14,6 +14,7 @@ static class Program
     {
         if (args.Contains("--list")) return ListDevices();
         if (args.Length == 2 && args[0] == "--snapshot") return Snapshot.Run(args[1]);
+        if (args.Length >= 2 && args[0] == "--qr-serve") return Snapshot.QrServe(args[1..]);
         if (args.Length == 3 && args[0] == "--send") return SendCli(args[1], args[2]);
 
         // Explorer's "Send with LocalSend Drop" passes: --share "<path>"
@@ -34,9 +35,17 @@ static class Program
 
         // Windows blocks drag-and-drop from Explorer into elevated windows, so an
         // admin-launched copy restarts itself as the normal user.
-        if (!Packaging.IsPackaged && IsElevated() && RelaunchUnelevated()) return 0;
+        // Development builds (run from bin\) and test identities (LSDROP_DATA) must never touch the
+        // real install: no relaunch through Explorer, Start-with-Windows or right-click changes.
+        var devBuild = Environment.ProcessPath!.Contains(@"\bin\", StringComparison.OrdinalIgnoreCase) ||
+                       Environment.GetEnvironmentVariable("LSDROP_DATA") is { Length: > 0 };
+        if (!devBuild && !Packaging.IsPackaged && IsElevated() && RelaunchUnelevated()) return 0;
 
-        using var single = new Mutex(true, @"Local\LocalSendDrop", out var first);
+        // A test identity (LSDROP_DATA) gets its own lock so it can run beside the real app.
+        var lockName = Environment.GetEnvironmentVariable("LSDROP_DATA") is { Length: > 0 } testData
+            ? @"Local\LocalSendDrop." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(testData)))[..12]
+            : @"Local\LocalSendDrop";
+        using var single = new Mutex(true, lockName, out var first);
         if (!first && updated)
         {
             // Just updated: the previous version is still shutting down.
@@ -56,7 +65,8 @@ static class Program
         ApplicationConfiguration.Initialize();
 
         var settings = Settings.Current;
-        if (!settings.FirstRunDone)
+        if (devBuild) { }
+        else if (!settings.FirstRunDone)
         {
             // It's meant to always be there, so start with Windows by default.
             SetAutostart(true);
@@ -122,6 +132,7 @@ static class Program
         server.Progress += (s, got, total) => card.BeginInvoke(() => card.OnProgress(s, got, total));
         server.Finished += (s, saved) => card.BeginInvoke(() => card.OnFinished(s, saved));
         server.Failed += (s, reason) => card.BeginInvoke(() => card.OnFailed(s, reason));
+        server.Reconnecting += s => card.BeginInvoke(() => card.OnReconnecting(s));
         server.MessageReceived += (alias, fingerprint, text) =>
         {
             if (fingerprint.Length > 0) Notes.Add(fingerprint, fromMe: false, text);
@@ -141,7 +152,7 @@ static class Program
         });
 
         // The package brings its own right-click entry; a plain .exe uses the classic one.
-        if (Packaging.IsPackaged) Shell.Unregister(); else Shell.Register();
+        if (Packaging.IsPackaged) Shell.Unregister(); else if (!devBuild) Shell.Register();
         Shell.Listen(paths => panel.BeginInvoke(() => panel.ShowShare(paths)),
                      text => panel.BeginInvoke(() => panel.ShowShareText(text)));
 
@@ -206,6 +217,13 @@ static class Program
             form.FormClosed += (_, _) => { openNotes.Remove(fingerprint); form.Dispose(); };
             form.Show();
         }
+        panel.ShareByQr = (items, text) =>
+        {
+            if (items.Count == 0 && string.IsNullOrEmpty(text)) return;
+            var form = new QrForm(QrShare.Start(id.Alias, items, text));
+            form.FormClosed += (_, _) => form.Dispose();
+            form.Show();
+        };
         panel.OpenNotes = d => OpenNotes(d.Fingerprint, DropPanel.DisplayName(d));
         card.Reply = (fingerprint, alias) => OpenNotes(fingerprint, panel.Find(fingerprint) is { } d ? DropPanel.DisplayName(d) : alias);
 
