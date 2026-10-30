@@ -35,6 +35,16 @@ sealed class DropPanel : Form
     public Action? OpenSettings;
     /// <summary>Footer button: turns Do not disturb on or off.</summary>
     public Action? ToggleQuiet;
+    /// <summary>Device menu: open the conversation, or ask for a file.</summary>
+    public Action<Device>? OpenNotes, AskForFile;
+
+    /// <summary>The device with this fingerprint, if it's nearby.</summary>
+    public Device? Find(string fingerprint) => _discovery.Devices.FirstOrDefault(d => d.Fingerprint == fingerprint);
+
+    /// <summary>Sends files to a device (e.g. answering its request).</summary>
+    public void SendFiles(Device d, List<string> paths) => StartSend(d, Sender.FromPaths(paths), paths);
+
+    public static string DisplayName(Device d) => NameOf(d);
 
     sealed class SendState
     {
@@ -172,12 +182,12 @@ sealed class DropPanel : Form
     }
 
     /// <summary>The name you gave a device, or its own.</summary>
-    static string Name(Device d) => Settings.Current.Nicknames.GetValueOrDefault(d.Fingerprint) ?? d.Alias;
+    static string NameOf(Device d) => Settings.Current.Nicknames.GetValueOrDefault(d.Fingerprint) ?? d.Alias;
 
     /// <summary>Pinned devices first, then by name.</summary>
     List<Device> Ordered() => _discovery.Devices
         .OrderByDescending(d => Settings.Current.Favorites.Contains(d.Fingerprint))
-        .ThenBy(Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        .ThenBy(NameOf, StringComparer.CurrentCultureIgnoreCase).ToList();
 
     /// <summary>Re-applies the corner after settings change.</summary>
     public void Reposition()
@@ -402,7 +412,8 @@ sealed class DropPanel : Form
         var who = $"{(h.Received ? "From" : "To")} {h.Peer}";
         var sub = h.Ok ? who : $"{who}: {h.Error ?? "failed"}";
         if (hot)
-            sub = h.Received && h.Ok ? "Select to open, right-click to show in folder"
+            sub = h.Text != null ? "Select to copy"
+                : h.Received && h.Ok ? "Select to open, or drag it somewhere"
                 : !h.Received && !h.Ok && CanRetry(h) ? "Select to try again"
                 : "Select to show in folder";
         Ui.DrawText(g, sub, Ui.Caption, new Rectangle(x, r.Top + S(25), tw, S(18)), h.Ok || hot ? Ui.TextSecondary : Ui.Error);
@@ -457,6 +468,7 @@ sealed class DropPanel : Form
         string sub;
         Color subColor = Ui.TextSecondary;
         if (target) { sub = "Release to send"; subColor = Ui.AccentText; }
+        else if (st is { Done: false } && i == _hover) sub = "Select to cancel";
         else if (st != null) { sub = st.Status; if (st.Error) subColor = Ui.Error; else if (st.Ok) subColor = Ui.Success; }
         else sub = Settings.Current.Nicknames.ContainsKey(d.Fingerprint) ? d.Alias : Ui.DeviceLabel(d);
 
@@ -466,7 +478,7 @@ sealed class DropPanel : Form
             Ui.DrawIcon(g, Ui.GlyphPin, 10f, pin, Ui.TextTertiary);
             tw -= S(24);
         }
-        Ui.DrawText(g, Name(d), Ui.Body, new Rectangle(x, r.Top + S(9), tw, S(20)), Ui.Text);
+        Ui.DrawText(g, NameOf(d), Ui.Body, new Rectangle(x, r.Top + S(9), tw, S(20)), Ui.Text);
         Ui.DrawText(g, sub, Ui.Caption, new Rectangle(x, r.Top + S(29), tw, S(18)), subColor);
         if (st?.Fraction is double f)
             Ui.Progress(g, new Rectangle(x, r.Bottom - S(8), tw, S(4)), f, DeviceDpi / 96f);
@@ -480,10 +492,40 @@ sealed class DropPanel : Form
         if (!_expanded) Expand(false);
     }
 
+    Point _pressAt;
+    int _pressRecent = -1;
+    bool _draggedOut;
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        _pressAt = e.Location;
+        _pressRecent = e.Button == MouseButtons.Left ? RecentAt(e.Location) : -1;
+        _draggedOut = false;
+    }
+
+    /// <summary>Files in Recent can be dragged into email, chat or a folder.</summary>
+    bool TryDragOut(MouseEventArgs e)
+    {
+        if (_pressRecent < 0 || e.Button != MouseButtons.Left) return false;
+        var drag = SystemInformation.DragSize;
+        if (Math.Abs(e.X - _pressAt.X) < drag.Width && Math.Abs(e.Y - _pressAt.Y) < drag.Height) return false;
+        var h = _recent[_pressRecent];
+        _pressRecent = -1;
+        var paths = h.Paths.Where(p => File.Exists(p) || Directory.Exists(p)).ToArray();
+        if (paths.Length == 0) return false;
+        _draggedOut = true;
+        _modal = true; // keep the panel open while dragging
+        try { DoDragDrop(new DataObject(DataFormats.FileDrop, paths), DragDropEffects.Copy); }
+        finally { _modal = false; }
+        return true;
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
         if (!_expanded) return;
+        if (TryDragOut(e)) return;
         var hover = RowAt(e.Location);
         var recent = RecentAt(e.Location);
         var icon = _gear.Contains(e.Location) ? "gear" : _refresh.Contains(e.Location) ? "refresh"
@@ -511,6 +553,7 @@ sealed class DropPanel : Form
     {
         base.OnMouseClick(e);
         if (!_expanded) return;
+        if (_draggedOut) { _draggedOut = false; return; }
         if (RecentAt(e.Location) is var ri and >= 0) { OnRecentClick(_recent[ri], e.Button == MouseButtons.Right); return; }
         if (e.Button == MouseButtons.Right)
         {
@@ -534,6 +577,9 @@ sealed class DropPanel : Form
     {
         var s = Settings.Current;
         var menu = Ui.Menu();
+        menu.Items.Add("Message…", null, (_, _) => BeginInvoke(() => OpenNotes?.Invoke(d)));
+        menu.Items.Add("Ask for a file…", null, (_, _) => BeginInvoke(() => AskForFile?.Invoke(d)));
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Rename…", null, (_, _) => BeginInvoke(() => Rename(d)));
         if (s.Nicknames.ContainsKey(d.Fingerprint))
             menu.Items.Add($"Use its own name ({d.Alias})", null, (_, _) => { s.Nicknames.Remove(d.Fingerprint); s.Save(); Reorder(); });
@@ -710,7 +756,7 @@ sealed class DropPanel : Form
         _modal = true;
         try
         {
-            using var dlg = new OpenFileDialog { Multiselect = true, Title = $"Send to {Name(d)}" };
+            using var dlg = new OpenFileDialog { Multiselect = true, Title = $"Send to {NameOf(d)}" };
             if (dlg.ShowDialog(this) == DialogResult.OK) StartSend(d, Sender.FromPaths(dlg.FileNames), dlg.FileNames.ToList());
         }
         finally { _modal = false; }
@@ -731,7 +777,7 @@ sealed class DropPanel : Form
 
         var progress = new Progress<(string text, double? fraction)>(p =>
         {
-            st.Status = p.fraction == null ? $"Waiting for {d.Alias} to accept" : $"{p.text}. Select to cancel";
+            st.Status = p.fraction == null ? $"Waiting for {NameOf(d)} to accept" : $"Sending {p.text}";
             st.Fraction = p.fraction;
             Invalidate();
         });

@@ -91,6 +91,12 @@ static class Program
         server.AskAccept = async (r, ct) =>
         {
             var s = Settings.Current;
+            // We asked them for this file: take it without asking again.
+            if (FileRequests.Consume(r.SenderFingerprint))
+            {
+                card.BeginInvoke(() => card.Receiving(r));
+                return true;
+            }
             if (Quiet.Active)
             {
                 // Declined quietly; Recent shows who tried.
@@ -116,15 +122,16 @@ static class Program
         server.Progress += (s, got, total) => card.BeginInvoke(() => card.OnProgress(s, got, total));
         server.Finished += (s, saved) => card.BeginInvoke(() => card.OnFinished(s, saved));
         server.Failed += (s, reason) => card.BeginInvoke(() => card.OnFailed(s, reason));
-        server.MessageReceived += (alias, text) =>
+        server.MessageReceived += (alias, fingerprint, text) =>
         {
+            if (fingerprint.Length > 0) Notes.Add(fingerprint, fromMe: false, text);
             var first = text.Replace("\r", "").Split('\n')[0].Trim();
             History.Add(new HistoryEntry
             {
                 Time = DateTime.UtcNow, Received = true, Peer = alias, Ok = true, Text = text,
                 Title = first.Length > 0 ? $"\u201C{first}\u201D" : "Message",
             });
-            if (!Quiet.Active) card.BeginInvoke(() => card.OnMessage(alias, text));
+            if (!Quiet.Active) card.BeginInvoke(() => card.OnMessage(alias, fingerprint, text));
         };
         server.Ended += (r, saved, error) => History.Add(new HistoryEntry
         {
@@ -178,6 +185,50 @@ static class Program
         }
         quiet.Click += (_, _) => ToggleQuiet();
         panel.ToggleQuiet = ToggleQuiet;
+
+        // ---- quick notes ----
+        var openNotes = new Dictionary<string, NotesForm>();
+        void OpenNotes(string fingerprint, string name)
+        {
+            if (openNotes.TryGetValue(fingerprint, out var existing)) { existing.Activate(); return; }
+            var form = new NotesForm(fingerprint, name, async text =>
+            {
+                if (panel.Find(fingerprint) is not { } device) return "they're not nearby right now";
+                try
+                {
+                    await Sender.SendAsync(id, discovery.HttpPort, device, [new SendItem("message.txt", null, text)],
+                        () => null, new Progress<(string, double?)>(), CancellationToken.None);
+                    return null;
+                }
+                catch (Exception ex) { return ex.Message; }
+            });
+            openNotes[fingerprint] = form;
+            form.FormClosed += (_, _) => { openNotes.Remove(fingerprint); form.Dispose(); };
+            form.Show();
+        }
+        panel.OpenNotes = d => OpenNotes(d.Fingerprint, DropPanel.DisplayName(d));
+        card.Reply = (fingerprint, alias) => OpenNotes(fingerprint, panel.Find(fingerprint) is { } d ? DropPanel.DisplayName(d) : alias);
+
+        // ---- asking for a file ----
+        panel.AskForFile = async d =>
+        {
+            var name = DropPanel.DisplayName(d);
+            var note = PromptForm.Ask($"Ask {name} for a file", "Optional: say what you need", "Ask", allowEmpty: true);
+            if (note == null) return;
+            FileRequests.Remember(d.Fingerprint);
+            var error = await FileRequests.SendAsync(id, discovery.HttpPort, d, note.Trim());
+            Notify(error == null ? $"Asked {name}. Their file will arrive without a prompt." : $"Couldn't ask {name}: {error}", error != null);
+        };
+        server.FileRequested += req => card.BeginInvoke(() => card.OnFileRequest(req));
+        card.AnswerRequest = req =>
+        {
+            var device = panel.Find(req.Fingerprint) ?? new Device
+            {
+                Fingerprint = req.Fingerprint, Alias = req.Alias, Ip = req.Ip, Port = req.Port, Protocol = "https", DeviceType = "desktop",
+            };
+            using var dlg = new OpenFileDialog { Multiselect = true, Title = $"Send to {req.Alias}" };
+            if (dlg.ShowDialog() == DialogResult.OK) panel.SendFiles(device, dlg.FileNames.ToList());
+        };
         var thisPc = new ToolStripMenuItem($"This PC: {id.Alias}") { Enabled = false };
         SettingsForm? open = null;
         void ShowSettings()

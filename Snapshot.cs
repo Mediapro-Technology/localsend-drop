@@ -38,16 +38,38 @@ static class Snapshot
 
             using (var card = new IncomingCard { Opacity = 0 })
             {
+                // Real thumbnails, made from the pictures this run already saved.
+                var pics = Directory.GetFiles(folder, "panel-*.png").Take(2).ToList();
                 var request = new IncomingRequest
                 {
                     SessionId = "s", SenderAlias = "HARSHID-PC", SenderIp = "127.0.0.1", SenderFingerprint = "A1",
-                    Files = [new("1", "Site survey photos.zip", 48_200_000, null, null), new("2", "Floor plan v3.pdf", 2_100_000, null, null)],
+                    Files =
+                    [
+                        new("1", "Site survey 01.png", 4_200_000, null, null, pics.Count > 0 ? Thumbs.DataUri(pics[0]) : null),
+                        new("2", "Site survey 02.png", 3_900_000, null, null, pics.Count > 1 ? Thumbs.DataUri(pics[1]) : null),
+                        new("3", "Floor plan v3.pdf", 2_100_000, null, null),
+                    ],
                 };
                 _ = card.Ask(request, CancellationToken.None);
                 Save(card, Path.Combine(folder, $"card-{mode}.png"));
                 card.Receiving(request);
-                card.OnProgress("s", 21_000_000, request.TotalSize);
+                Thread.Sleep(1200); // so there's a speed to show
+                card.OnProgress("s", 4_800_000, request.TotalSize);
                 Save(card, Path.Combine(folder, $"card-receiving-{mode}.png"));
+                card.OnFileRequest(new FileRequest("HARSHID-PC", "A1", "127.0.0.1", 53317, "The signed contract from yesterday"));
+                Save(card, Path.Combine(folder, $"card-request-{mode}.png"));
+            }
+
+            if (Notes.For("A1").Count == 0)
+            {
+                Notes.Add("A1", fromMe: false, "Can you send me the floor plan?");
+                Notes.Add("A1", fromMe: true, "Sure, sending it now. It's the v3 with the new stairs.");
+                Notes.Add("A1", fromMe: false, "Got it, thanks!");
+            }
+            using (var notes = new NotesForm("A1", "HARSHID-PC", _ => Task.FromResult<string?>(null)) { Opacity = 0 })
+            {
+                notes.Show();
+                Save(notes, Path.Combine(folder, $"notes-{mode}.png"));
             }
 
             using (var settings = new SettingsForm(true, () => Task.FromResult(false), _ => Task.CompletedTask) { Opacity = 0 })

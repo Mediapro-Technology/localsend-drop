@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging;
 
 namespace LocalSendDrop;
 
-sealed record IncomingFile(string Id, string FileName, long Size, string? FileType, string? Preview);
+sealed record IncomingFile(string Id, string FileName, long Size, string? FileType, string? Preview, string? Thumbnail = null);
 
 /// <summary>A transfer someone wants to send us; the UI accepts or declines it.</summary>
 sealed class IncomingRequest
@@ -41,7 +41,9 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
     public event Action<string, long, long>? Progress;              // sessionId, received, total
     public event Action<string, List<string>>? Finished;            // sessionId, saved paths
     public event Action<string, string>? Failed;                    // sessionId, reason
-    public event Action<string, string>? MessageReceived;           // alias, text
+    public event Action<string, string, string>? MessageReceived;   // alias, fingerprint, text
+    /// <summary>Another LocalSend Drop PC asks us to send it a file.</summary>
+    public event Action<FileRequest>? FileRequested;
     /// <summary>A transfer ended: saved paths on success, or a reason on failure.</summary>
     public event Action<IncomingRequest, List<string>, string?>? Ended;
 
@@ -101,6 +103,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         app.MapPost("/api/localsend/v2/prepare-upload", (Func<HttpContext, Task<IResult>>)(ctx => PrepareUpload(ctx)));
         app.MapPost("/api/localsend/v2/upload", (Func<HttpContext, Task<IResult>>)(ctx => Upload(ctx)));
         app.MapPost("/api/localsend/v2/cancel", (Func<HttpContext, IResult>)(ctx => Cancel(ctx)));
+        app.MapPost("/api/localsend-drop/v1/request", (Func<HttpContext, Task<IResult>>)(ctx => Request(ctx)));
 
         await app.StartAsync();
         _app = app;
@@ -118,6 +121,23 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         if (info != null && !string.IsNullOrEmpty(info.Fingerprint))
             discovery.Upsert(info, IPAddress.Parse(RemoteIp(ctx)));
         return Results.Json(discovery.OurInfo(), Json.Options);
+    }
+
+    /// <summary>LocalSend Drop extension: "please send me a file".</summary>
+    async Task<IResult> Request(HttpContext ctx)
+    {
+        JsonElement body;
+        try { body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body); }
+        catch { return Results.BadRequest(); }
+        if (Quiet.Active) return Results.StatusCode(423);
+        string? Str(string name) => body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        var claimed = Str("fingerprint") ?? "";
+        var fingerprint = ctx.Connection.ClientCertificate is { } cc ? Identity.FingerprintOf(cc) : claimed;
+        var port = body.TryGetProperty("port", out var p) && p.TryGetInt32(out var n) ? n : 53317;
+        var note = Str("note");
+        FileRequested?.Invoke(new FileRequest(Str("alias") ?? "Someone", fingerprint, RemoteIp(ctx), port,
+            note is { Length: > 0 } ? note[..Math.Min(note.Length, 200)] : null));
+        return Results.Ok();
     }
 
     async Task<IResult> PrepareUpload(HttpContext ctx)
@@ -140,14 +160,15 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
                 f.TryGetProperty("fileName", out var n) ? n.GetString() ?? "file" : "file",
                 f.TryGetProperty("size", out var s) && s.TryGetInt64(out var size) ? size : 0,
                 f.TryGetProperty("fileType", out var t) ? t.GetString() : null,
-                f.TryGetProperty("preview", out var pv) && pv.ValueKind == JsonValueKind.String ? pv.GetString() : null));
+                f.TryGetProperty("preview", out var pv) && pv.ValueKind == JsonValueKind.String ? pv.GetString() : null,
+                f.TryGetProperty("thumbnail", out var th) && th.ValueKind == JsonValueKind.String ? th.GetString() : null));
         }
         if (files.Count == 0) return Results.BadRequest();
 
         // A text message: show it, nothing to upload.
         if (files.Count == 1 && files[0].Preview != null && (files[0].FileType ?? "").StartsWith("text/"))
         {
-            MessageReceived?.Invoke(alias, files[0].Preview!);
+            MessageReceived?.Invoke(alias, fingerprint, files[0].Preview!);
             return Results.NoContent();
         }
 

@@ -34,7 +34,8 @@ sealed class Device
     public string Protocol { get; set; } = "https";
     public DateTime LastSeen { get; set; }
 
-    public string BaseUrl => $"{Protocol}://{(Ip.Contains(':') ? $"[{Ip}]" : Ip)}:{Port}/api/localsend/v2";
+    public string Root => $"{Protocol}://{(Ip.Contains(':') ? $"[{Ip}]" : Ip)}:{Port}";
+    public string BaseUrl => Root + "/api/localsend/v2";
 }
 
 /// <summary>Something to send: a file on disk, or a text message.</summary>
@@ -80,6 +81,63 @@ static class LsHttp
 
 sealed class SendFailed(string message) : Exception(message);
 
+/// <summary>Speed and time left, e.g. "42%, 11.2 MB/s, 20 s left".</summary>
+static class Rate
+{
+    public static string Describe(long done, long total, TimeSpan elapsed)
+    {
+        var pct = done * 100 / Math.Max(total, 1);
+        if (elapsed.TotalSeconds < 1 || done == 0) return $"{pct}%";
+        var perSecond = done / elapsed.TotalSeconds;
+        return $"{pct}%, {IncomingCard.FormatSize((long)perSecond)}/s, {Left((total - done) / perSecond)}";
+    }
+
+    static string Left(double seconds) => seconds switch
+    {
+        < 60 => $"{Math.Max(1, (int)Math.Ceiling(seconds))} s left",
+        < 3600 => $"{(int)Math.Ceiling(seconds / 60)} min left",
+        _ => $"{seconds / 3600:0.#} h left",
+    };
+}
+
+/// <summary>A LocalSend Drop extension: ask another PC to send you a file.</summary>
+sealed record FileRequest(string Alias, string Fingerprint, string Ip, int Port, string? Note);
+
+static class FileRequests
+{
+    static readonly Dictionary<string, DateTime> Asked = [];
+
+    /// <summary>Remember that we asked, so their file is accepted without a prompt.</summary>
+    public static void Remember(string fingerprint) { lock (Asked) Asked[fingerprint] = DateTime.UtcNow; }
+
+    /// <summary>True (once) if we asked this device within the last 15 minutes.</summary>
+    public static bool Consume(string fingerprint)
+    {
+        lock (Asked)
+            return Asked.Remove(fingerprint, out var at) && DateTime.UtcNow - at < TimeSpan.FromMinutes(15);
+    }
+
+    /// <returns>null if they got it, otherwise why not.</returns>
+    public static async Task<string?> SendAsync(Identity id, int ourPort, Device target, string? note)
+    {
+        try
+        {
+            using var client = LsHttp.Create(id, LsHttp.PinFor(target), TimeSpan.FromSeconds(8));
+            var resp = await client.PostAsJsonAsync(target.Root + "/api/localsend-drop/v1/request",
+                new { alias = id.Alias, fingerprint = id.Fingerprint, port = ourPort, note }, Json.Options);
+            return (int)resp.StatusCode switch
+            {
+                200 => null,
+                423 => "they have Do not disturb on",
+                404 or 405 => "they need LocalSend Drop to receive requests",
+                var code => $"their PC answered {code}",
+            };
+        }
+        catch (HttpRequestException) { return "couldn't reach them"; }
+        catch (TaskCanceledException) { return "they didn't answer"; }
+    }
+}
+
 static class Sender
 {
     static readonly Dictionary<string, string> Mime = new(StringComparer.OrdinalIgnoreCase)
@@ -122,12 +180,16 @@ static class Sender
 
         var files = new Dictionary<string, object>();
         var byId = new Dictionary<string, SendItem>();
+        var previews = 0;
         foreach (var item in items)
         {
             var fid = Guid.NewGuid().ToString("N");
             byId[fid] = item;
             var isText = item.Path == null;
             var info = item.Path != null ? new FileInfo(item.Path) : null;
+            // LocalSend Drop shows these on the accept card; LocalSend ignores the extra field.
+            var thumbnail = item.Path != null && previews < 4 ? Thumbs.DataUri(item.Path) : null;
+            if (thumbnail != null) previews++;
             files[fid] = new
             {
                 id = fid,
@@ -136,6 +198,7 @@ static class Sender
                 fileType = isText ? "text/plain" : Mime.GetValueOrDefault(Path.GetExtension(item.Name), "application/octet-stream"),
                 sha256 = (string?)null,
                 preview = isText ? item.Text : null,
+                thumbnail,
                 metadata = info == null ? null : new
                 {
                     modified = info.LastWriteTimeUtc.ToString("o"),
@@ -190,6 +253,7 @@ static class Sender
         if (tokens.Count == 0) return "Delivered";
 
         long total = tokens.Sum(t => byId[t.fileId].Size), done = 0;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         var lastPct = -1L;
         try
         {
@@ -202,9 +266,10 @@ static class Sender
                 var baseDone = done;
                 var content = new StreamContent(new ProgressStream(fs, read =>
                 {
-                    var pct = (baseDone + read) * 100 / Math.Max(total, 1);
+                    var sent = baseDone + read;
+                    var pct = sent * 100 / Math.Max(total, 1);
                     if (pct == Interlocked.Exchange(ref lastPct, pct)) return;
-                    progress.Report(($"Sending {pct}%", pct / 100.0));
+                    progress.Report((Rate.Describe(sent, total, clock.Elapsed), pct / 100.0));
                 }), 1 << 16);
                 content.Headers.ContentLength = item.Size;
                 content.Headers.ContentType = new("application/octet-stream");

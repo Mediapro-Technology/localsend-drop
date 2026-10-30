@@ -23,8 +23,14 @@ sealed class IncomingCard : Form
     List<string> _lines = [];
     double _fraction = -1;
     bool _error, _done;
+    readonly List<Image> _thumbs = [];
+    DateTime _started;
 
     public Action? CancelReceive;
+    /// <summary>Reply to a message: fingerprint, name.</summary>
+    public Action<string, string>? Reply;
+    /// <summary>Someone asked for a file and we chose to answer.</summary>
+    public Action<FileRequest>? AnswerRequest;
 
     public IncomingCard()
     {
@@ -65,7 +71,7 @@ sealed class IncomingCard : Form
 
     int S(int v) => LogicalToDeviceUnits(v);
 
-    const int W = 364, Pad = 16, HeaderH = 40, LineH = 20;
+    const int W = 364, Pad = 16, HeaderH = 40, LineH = 20, ThumbH = 72;
 
     /// <summary>Lays out the card for the current state and shows it.</summary>
     void Arrange(string? primary, string? secondary)
@@ -73,6 +79,7 @@ sealed class IncomingCard : Form
         _autoHide.Stop();
         int w = S(W), pad = S(Pad);
         var y = S(HeaderH) + S(22);                       // title
+        if (_thumbs.Count > 0) y += S(ThumbH + 8);
         y += _lines.Count * S(LineH);
         if (_caption.Length > 0) y += S(LineH);
         if (_fraction >= 0) y += S(16);
@@ -121,6 +128,28 @@ sealed class IncomingCard : Form
         var y = S(HeaderH);
         Ui.DrawText(g, _title, Ui.BodyStrong, new Rectangle(pad, y, w - 2 * pad, S(22)), _error ? Ui.Error : Ui.Text);
         y += S(22);
+        if (_thumbs.Count > 0)
+        {
+            // Previews sent by the other PC, cropped to squares like the Photos app.
+            var x = pad;
+            foreach (var img in _thumbs)
+            {
+                var box = new Rectangle(x, y + S(4), S(ThumbH), S(ThumbH));
+                using (var path = Ui.Round(box, S(4)))
+                {
+                    var old = g.Clip;
+                    g.SetClip(path, System.Drawing.Drawing2D.CombineMode.Intersect);
+                    var scale = Math.Max((double)box.Width / img.Width, (double)box.Height / img.Height);
+                    int iw = (int)(img.Width * scale), ih = (int)(img.Height * scale);
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g.DrawImage(img, box.X + (box.Width - iw) / 2, box.Y + (box.Height - ih) / 2, iw, ih);
+                    g.Clip = old;
+                }
+                Ui.StrokeRound(g, Ui.CardStroke, box, S(4));
+                x += S(ThumbH + 8);
+            }
+            y += S(ThumbH + 8);
+        }
         foreach (var line in _lines)
         {
             Ui.DrawText(g, line, Ui.Body, new Rectangle(pad, y, w - 2 * pad, S(LineH)), Ui.TextSecondary);
@@ -168,6 +197,8 @@ sealed class IncomingCard : Form
 
     void Reset()
     {
+        foreach (var t in _thumbs) t.Dispose();
+        _thumbs.Clear();
         _error = _done = false;
         _fraction = -1;
         _lines = [];
@@ -183,8 +214,11 @@ sealed class IncomingCard : Form
         _session = r.SessionId;
         Reset();
         _title = $"{r.SenderAlias} wants to send you {Count(r.Files.Count)}";
-        _lines = r.Files.Take(3).Select(f => f.FileName).ToList();
-        if (r.Files.Count > 3) _lines.Add($"and {r.Files.Count - 3} more");
+        foreach (var f in r.Files.Take(4))
+            if (Thumbs.FromDataUri(f.Thumbnail) is { } img) _thumbs.Add(img);
+        _lines = r.Files.Take(_thumbs.Count > 0 ? 2 : 3).Select(f => f.FileName).ToList();
+        var shown = _lines.Count;
+        if (r.Files.Count > shown) _lines.Add($"and {r.Files.Count - shown} more");
         _caption = FormatSize(r.TotalSize);
         Arrange("Accept", "Decline");
         _onPrimary = () => { tcs.TrySetResult(true); Receiving(r); };
@@ -205,6 +239,7 @@ sealed class IncomingCard : Form
         _lines = r.Files.Take(1).Select(f => r.Files.Count == 1 ? f.FileName : $"{f.FileName} and {r.Files.Count - 1} more").ToList();
         _caption = $"0 of {FormatSize(r.TotalSize)}";
         _fraction = 0;
+        _started = DateTime.UtcNow;
         Arrange(null, "Cancel");
         _onSecondary = () => CancelReceive?.Invoke();
         _onClose = Hide; // keeps receiving in the background
@@ -215,6 +250,8 @@ sealed class IncomingCard : Form
         if (session != _session || _fraction < 0) return;
         _fraction = total > 0 ? Math.Min(1, (double)received / total) : 1;
         _caption = $"{FormatSize(received)} of {FormatSize(total)}";
+        var rate = Rate.Describe(received, total, DateTime.UtcNow - _started);
+        if (rate.Contains(',')) _caption += rate[rate.IndexOf(',')..];   // ", 11 MB/s, 20 s left"
         Invalidate();
     }
 
@@ -247,14 +284,27 @@ sealed class IncomingCard : Form
         HideAfter(8000);
     }
 
-    public void OnMessage(string alias, string text)
+    public void OnMessage(string alias, string fingerprint, string text)
     {
         _session = null;
         Reset();
         _title = $"Message from {alias}";
         _lines = text.Replace("\r", "").Split('\n').Take(6).ToList();
-        Arrange("Copy", "Dismiss");
-        _onPrimary = () => { Clipboard.SetText(text); Hide(); };
+        Arrange("Reply", "Copy");
+        _onPrimary = () => { Hide(); Reply?.Invoke(fingerprint, alias); };
+        _onSecondary = () => { Clipboard.SetText(text); Hide(); };
+        if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
+    }
+
+    public void OnFileRequest(FileRequest req)
+    {
+        _session = null;
+        Reset();
+        _title = $"{req.Alias} is asking for a file";
+        _lines = req.Note != null ? [$"\u201C{req.Note}\u201D"] : [];
+        _caption = "Choose what to send. It goes straight to them.";
+        Arrange("Choose file", "Decline");
+        _onPrimary = () => { Hide(); AnswerRequest?.Invoke(req); };
         _onSecondary = Hide;
         if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
     }
@@ -275,11 +325,13 @@ sealed class IncomingCard : Form
 /// <summary>A one-field dialog in the same style (used for PINs).</summary>
 sealed class PromptForm : Form
 {
-    public static string? Ask(string title, string hint, string action, string initial = "")
+    /// <param name="allowEmpty">If true, an empty answer is "" (only Cancel gives null).</param>
+    public static string? Ask(string title, string hint, string action, string initial = "", bool allowEmpty = false)
     {
         using var f = new PromptForm(title, hint, action);
         f._box.Text = initial;
-        return f.ShowDialog() == DialogResult.OK && f._box.Text.Length > 0 ? f._box.Text : null;
+        if (f.ShowDialog() != DialogResult.OK) return null;
+        return f._box.Text.Length > 0 || allowEmpty ? f._box.Text : null;
     }
 
     readonly TextField _box = new();
