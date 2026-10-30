@@ -106,13 +106,39 @@ static class Program
         Shell.Register();
         Shell.Listen(paths => panel.BeginInvoke(() => panel.ShowShare(paths)));
 
+        // Windows 11: the packaged menu entry replaces the "Show more options" one.
+        async Task SetUpShellMenu(bool ask)
+        {
+            if (!ShellPackage.Supported) return;
+            if (await Task.Run(ShellPackage.IsInstalled))
+            {
+                ShellPackage.EnsureDll();
+                Shell.Unregister();
+                return;
+            }
+            if (!ask) return;
+            var error = await Task.Run(ShellPackage.Install);
+            if (error == null)
+            {
+                Shell.Unregister();
+                Notify("\"Send with LocalSend Drop\" is now in the right-click menu", false);
+            }
+            else Notify($"Couldn't add to the right-click menu: {error}", true);
+        }
+        _ = Task.Delay(TimeSpan.FromSeconds(8)).ContinueWith(_ => panel.BeginInvoke(async () =>
+        {
+            var first = !Settings.Current.ShellMenuOffered;
+            if (first) { Settings.Current.ShellMenuOffered = true; Settings.Current.Save(); }
+            await SetUpShellMenu(ask: first);
+        }));
+
         var menu = new ContextMenuStrip();
         var thisPc = new ToolStripMenuItem($"This PC: {id.Alias}") { Enabled = false };
         SettingsForm? open = null;
         void ShowSettings()
         {
             if (open != null) { open.Activate(); return; }
-            using var f = open = new SettingsForm(IsAutostart());
+            using var f = open = new SettingsForm(IsAutostart(), () => SetUpShellMenu(ask: true));
             var ok = f.ShowDialog() == DialogResult.OK;
             open = null;
             if (!ok) return;

@@ -1,0 +1,4 @@
+LIBRARY LocalSendDropShell
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

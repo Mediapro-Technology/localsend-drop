@@ -74,6 +74,10 @@ sealed class Settings
         System.Windows.Forms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == Monitor) ?? System.Windows.Forms.Screen.PrimaryScreen!;
     public bool Sound { get; set; } = true;
     public bool AutoUpdate { get; set; } = true;
+    /// <summary>Folder the Windows 11 menu package was registered for.</summary>
+    public string? ShellMenuDir { get; set; }
+    /// <summary>We asked once on first run; after that it's the Settings link.</summary>
+    public bool ShellMenuOffered { get; set; }
     /// <summary>Fingerprints of senders accepted before.</summary>
     public List<string> Trusted { get; set; } = [];
 

@@ -26,7 +26,9 @@ sealed class SettingsForm : Form
     Rectangle _close;
     bool _closeHot;
 
-    public SettingsForm(bool autostart)
+    readonly LinkText _menu = new("Add \"Send with LocalSend Drop\" to the right-click menu");
+
+    public SettingsForm(bool autostart, Func<Task> addMenu)
     {
         var s = Settings.Current;
         Text = "LocalSend Drop settings";
@@ -63,6 +65,17 @@ sealed class SettingsForm : Form
         _forget.Visible = trusted > 0;
         _forget.Click += (_, _) => { ForgetTrusted = true; _forget.Text = "They'll be forgotten when you save"; _forget.Width = _forget.Measure().Width; };
 
+        _menu.Visible = ShellPackage.Supported && !ShellPackage.Installed;
+        _menu.Click += async (_, _) =>
+        {
+            _menu.Text = "Adding… approve the Windows prompt";
+            _menu.Enabled = false;
+            await addMenu();
+            _menu.Text = ShellPackage.Installed ? "Added to the right-click menu" : "Add to the right-click menu again";
+            _menu.Enabled = !ShellPackage.Installed;
+            _menu.Width = _menu.Measure().Width;
+        };
+
         _save.Click += (_, _) => TrySave();
         _cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; };
         KeyDown += (_, e) =>
@@ -71,7 +84,7 @@ sealed class SettingsForm : Form
             if (e.KeyCode == Keys.Enter && !_modes.Any(m => m.Focused)) TrySave();
         };
 
-        Controls.AddRange([_name, _folder, .. _modes, _corner, _sound, _autostart, _update, _forget, _save, _cancel]);
+        Controls.AddRange([_name, _folder, .. _modes, _corner, _sound, _autostart, _update, _forget, _menu, _save, _cancel]);
         DoLayout();
     }
 
@@ -99,6 +112,7 @@ sealed class SettingsForm : Form
         _autostart.SetBounds(lx, y, colW, S(36)); y += S(40);
         _update.SetBounds(lx, y, colW, S(36)); y += S(40);
         if (_forget.Visible) { y += S(4); _forget.SetBounds(lx, y, _forget.Measure().Width, S(24)); y += S(28); }
+        if (_menu.Visible) { y += S(4); _menu.SetBounds(lx, y, Math.Min(colW, _menu.Measure().Width), S(24)); y += S(28); }
         var leftBottom = y;
 
         y = S(80);

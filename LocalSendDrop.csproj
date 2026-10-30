@@ -24,6 +24,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Windows 11 right-click menu, built by shell/build.ps1 -->
+    <EmbeddedResource Include="shell\bin\LocalSendDropShell.dll" LogicalName="shell.dll" />
+    <EmbeddedResource Include="shell\bin\LocalSendDrop.msix" LogicalName="shell.msix" />
+    <EmbeddedResource Include="shell\bin\LocalSendDrop.cer" LogicalName="shell.cer" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Kestrel: the HTTPS receiver. -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
