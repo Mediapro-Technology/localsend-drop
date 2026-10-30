@@ -22,6 +22,7 @@ sealed class DropPanel : Form
     List<string>? _pending;           // files from Explorer's "Send with…", waiting for a device
     string? _pendingText;             // copied text (Ctrl+Alt+S), waiting for a device
     bool Holding => _pending != null || _pendingText != null;
+    bool _shelved;                    // _pending came from the shelf: it outlives the panel closing
     const int Everyone = -2;          // RowAt() result for the "Everyone nearby" row
     const int QrRow = -3;             // RowAt() result for "Phone without the app"
     const int ShelfRow = -4;          // RowAt() result for the shelf box (top right) and the files on it
@@ -81,7 +82,7 @@ sealed class DropPanel : Form
 
         _leaveTimer.Tick += (_, _) =>
         {
-            if (!_expanded || _modal || Holding) return;
+            if (!_expanded || _modal || (Holding && !_shelved)) return;
             var r = Bounds;
             r.Inflate(S(24), S(24));
             if (!r.Contains(Cursor.Position) && !(_mouth is { Visible: true } && _mouth.Bounds.Contains(Cursor.Position))) Collapse();
@@ -173,6 +174,7 @@ sealed class DropPanel : Form
     public void ShowShare(List<string> paths)
     {
         _pending = paths;
+        _shelved = false;
         _pendingText = null;
         SummarizePaths(paths.ToArray());
         Expand(false);
@@ -184,6 +186,7 @@ sealed class DropPanel : Form
     public void ShowShareText(string text)
     {
         _pending = null;
+        _shelved = false;
         _pendingText = text;
         var firstLine = text.Replace("\r", "").Split('\n')[0].Trim();
         _dragTitle = firstLine.Length > 0 ? $"\u201C{firstLine}\u201D" : "text";
@@ -214,7 +217,7 @@ sealed class DropPanel : Form
         _expanded = false;
         _leaveTimer.Stop();
         _dragTitle = _dragSub = null;
-        _pending = null;
+        if (!_shelved) _pending = null;
         _pendingText = null;
         _hover = _dragOver = _hoverRecent = -1;
         _scroll = 0;
@@ -259,6 +262,7 @@ sealed class DropPanel : Form
         Ui.Chrome(Handle);
         _devices = Ordered();
         _recent = History.Latest(5).ToList();
+        if (opening && _shelved && _pending != null) SummarizePaths(_pending.ToArray());
         if (opening)
         {
             // Glass: blur whatever the panel is about to cover (its whole column, it may grow).
@@ -405,7 +409,7 @@ sealed class DropPanel : Form
     {
         _pending!.RemoveAt(i);
         _hoverTile = -1;
-        if (_pending.Count == 0) { _pending = null; _dragTitle = _dragSub = null; }
+        if (_pending.Count == 0) { _pending = null; _shelved = false; _dragTitle = _dragSub = null; }
         else SummarizePaths(_pending.ToArray());
         Measure();
         Invalidate();
@@ -617,6 +621,7 @@ sealed class DropPanel : Form
     /// <summary>Files fed to the mouth: they go on the shelf.</summary>
     void Shelve(string[] files)
     {
+        _shelved = true;
         _pending = (_pending ?? []).Concat(files).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         _pendingText = null;
         SummarizePaths(_pending.ToArray());
@@ -633,6 +638,7 @@ sealed class DropPanel : Form
         {
             using var dlg = new OpenFileDialog { Multiselect = true, Title = "Put on the shelf" };
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            _shelved = true;
             _pending = (_pending ?? []).Concat(dlg.FileNames).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             _pendingText = null;
             SummarizePaths(_pending.ToArray());
@@ -768,7 +774,7 @@ sealed class DropPanel : Form
         if (e.Button != MouseButtons.Left) return;
         if (_gear.Contains(e.Location)) { OpenSettings?.Invoke(); return; }
         if (_quiet.Contains(e.Location)) { ToggleQuiet?.Invoke(); Invalidate(); return; }
-        if (_discard.Contains(e.Location)) { Collapse(); return; }
+        if (_discard.Contains(e.Location)) { _shelved = false; Collapse(); return; }
         if (TileAt(e.Location) is var ti and >= 0) { if (ti < TileFiles) TakeOffShelf(ti); return; }
         if (_clear.Contains(e.Location)) { History.Clear(); return; }
         if (_refresh.Contains(e.Location) || _again.Contains(e.Location)) { Refresh_(); return; }
@@ -907,6 +913,7 @@ sealed class DropPanel : Form
         _dragTitle = _dragSub = null;
         if (i == ShelfRow && e.Data!.GetData(DataFormats.FileDrop) is string[] kept)
         {
+            _shelved = true;
             _pending = (_pending ?? []).Concat(kept).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             _pendingText = null;
             EndDrag();
@@ -981,6 +988,7 @@ sealed class DropPanel : Form
             ? ([new SendItem("message.txt", null, _pendingText)], [])
             : (Sender.FromPaths(_pending!), _pending!);
         _pending = null;
+        _shelved = false;
         _pendingText = null;
         _dragTitle = _dragSub = null;
         Measure();
