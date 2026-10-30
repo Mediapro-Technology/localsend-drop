@@ -28,5 +28,6 @@ Add-AppxPackage -Path "$tmp\LocalSendDrop.msix" -ForceApplicationShutdown
 
 $family = (Get-AppxPackage MediaproTechnology.LocalSendDrop).PackageFamilyName
 Start-Process "shell:AppsFolder\$family!LocalSendDrop"
-Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+# .NET, not Remove-Item: Windows PowerShell chokes on short "USER~1" temp paths.
+try { [IO.Directory]::Delete($tmp, $true) } catch { }
 Write-Host "Done. LocalSend Drop is running: drag files into the top-left corner of your screen." -ForegroundColor Green
