@@ -4,3 +4,4 @@ dist/
 *.user
 .vs/
 shell/obj/
+!shell/bin/
