@@ -310,6 +310,20 @@ static class Program
         if (Process.GetProcessesByName("localsend_app").Length > 0)
             Notify("LocalSend is also running. Quit it so files come to LocalSend Drop instead.", true);
 
+        // On a Public network Windows blocks everything incoming: say so, once per network change.
+        var publicWarned = false;
+        void CheckNetwork()
+        {
+            var isPublic = NetCheck.OnlyPublic();
+            if (isPublic && !publicWarned)
+                Notify("This network is set to Public, so other devices can't send to you. Select here, then set it to Private.", true);
+            publicWarned = isPublic;
+        }
+        tray.BalloonTipClicked += (_, _) => { if (publicWarned) NetCheck.OpenSettings(); };
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += (_, _) =>
+            _ = Task.Delay(3000).ContinueWith(_ => panel.BeginInvoke(CheckNetwork));
+        _ = Task.Delay(5000).ContinueWith(_ => panel.BeginInvoke(CheckNetwork));
+
         // Updates: check shortly after start, then every 6 hours; install when idle.
         // status: where a manual check from Settings shows its progress; otherwise notifications.
         async Task CheckForUpdates(bool manual, Action<string>? status = null)
