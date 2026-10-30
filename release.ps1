@@ -25,5 +25,9 @@ git push -q origin HEAD "v$Version" 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "git push failed" }
 $ErrorActionPreference = "Stop"
 
+# Notes go through a file: Windows PowerShell mangles quotes inside native arguments.
+$notesFile = New-TemporaryFile
+Set-Content $notesFile $Notes -Encoding utf8
 gh release create "v$Version" dist/LocalSendDrop.exe --repo Mediapro-Technology/localsend-drop `
-    --title "LocalSend Drop $Version" --notes $Notes
+    --title "LocalSend Drop $Version" --notes-file $notesFile
+Remove-Item $notesFile
