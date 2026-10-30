@@ -24,16 +24,17 @@ sealed class DropPanel : Form
     bool Holding => _pending != null || _pendingText != null;
     const int Everyone = -2;          // RowAt() result for the "Everyone nearby" row
     const int QrRow = -3;             // RowAt() result for "Phone without the app"
-    const int ShelfRow = -4;          // RowAt() result for "Keep on the shelf" (only while dragging files)
+    const int ShelfRow = -4;          // RowAt() result for the shelf box (top right) and the files on it
     bool _dragging, _dragHasFiles;
-    int _shelfH;
+    int _trayH, _hoverTile = -1;
+    readonly List<Rectangle> _tiles = [];   // the files on the shelf, as icons under the header
     List<HistoryEntry> _recent = [];
     int _hoverRecent = -1;
 
     // layout (device pixels), rebuilt in Measure()
     readonly List<Rectangle> _rows = [];
     readonly List<Rectangle> _recentRows = [];
-    Rectangle _gear, _refresh, _again, _list, _discard, _clear, _everyone, _quiet, _qr, _shelf;
+    Rectangle _gear, _refresh, _again, _list, _discard, _clear, _everyone, _quiet, _qr, _shelf, _tray;
     int _recentLabelY;
 
     public Action? OpenSettings;
@@ -274,6 +275,7 @@ sealed class DropPanel : Form
     }
 
     // Windows 11 flyout metrics: 4 px list inset, 4 px item radius, 48 px footer.
+    const int TrayH = 60, TileSize = 48, ShelfW = 76;
     const int Width_ = 340, HeaderH = 72, RowH = 56, FooterH = 48, EmptyH = 112, RecentH = 48, RecentLabelH = 40, Inset = 4;
 
     /// <summary>Recent transfers are hidden while you're holding files, to keep the targets clear.</summary>
@@ -285,8 +287,8 @@ sealed class DropPanel : Form
         var wa = Settings.Current.TargetScreen.WorkingArea;
         int m = S(12), w = S(Width_);
         var everyoneH = _devices.Count >= 2 ? S(RowH) : 0;
-        _shelfH = _dragging && _dragHasFiles ? S(RowH) : 0;
-        var listedH = _shelfH + (_devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH));
+        _trayH = _pending is { Count: > 0 } ? S(TrayH) : 0;
+        var listedH = _trayH + (_devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH));
         var devicesH = listedH + S(RowH) + S(8);   // + "Phone without the app"
         var contentH = devicesH + (ShowRecent ? S(RecentLabelH) + _recent.Count * S(RecentH) + S(8) : 0);
         var maxContent = wa.Height - 2 * m - S(HeaderH + FooterH);
@@ -299,10 +301,19 @@ sealed class DropPanel : Form
 
         _list = new Rectangle(0, S(HeaderH), w, listH);
         _rows.Clear();
-        _shelf = _shelfH > 0 ? new Rectangle(S(Inset), _list.Top - _scroll, w - S(2 * Inset), S(RowH)) : Rectangle.Empty;
-        _everyone = everyoneH > 0 ? new Rectangle(S(Inset), _list.Top + _shelfH - _scroll, w - S(2 * Inset), S(RowH)) : Rectangle.Empty;
+        _tray = new Rectangle(S(Inset), _list.Top - _scroll, w - S(2 * Inset), _trayH);
+        _tiles.Clear();
+        if (_trayH > 0)
+        {
+            int tile = S(TileSize), gap = S(8), x0 = S(16);
+            var fit = Math.Max(1, (w - 2 * x0 + gap) / (tile + gap));
+            for (var i = 0; i < Math.Min(_pending!.Count, fit); i++)
+                _tiles.Add(new Rectangle(x0 + i * (tile + gap), _tray.Top + S(4), tile, tile));
+        }
+        _shelf = _pendingText == null ? new Rectangle(w - S(16 + ShelfW), S(12), S(ShelfW), S(48)) : Rectangle.Empty;
+        _everyone = everyoneH > 0 ? new Rectangle(S(Inset), _list.Top + _trayH - _scroll, w - S(2 * Inset), S(RowH)) : Rectangle.Empty;
         for (var i = 0; i < _devices.Count; i++)
-            _rows.Add(new Rectangle(S(Inset), _list.Top + _shelfH + everyoneH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
+            _rows.Add(new Rectangle(S(Inset), _list.Top + _trayH + everyoneH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
 
         _qr = new Rectangle(S(Inset), _list.Top + listedH - _scroll, w - S(2 * Inset), S(RowH));
         _recentRows.Clear();
@@ -315,14 +326,16 @@ sealed class DropPanel : Form
             for (var i = 0; i < _recent.Count; i++)
                 _recentRows.Add(new Rectangle(S(Inset), _recentLabelY + S(RecentLabelH) + i * S(RecentH), w - S(2 * Inset), S(RecentH)));
         }
-        _discard = Holding ? new Rectangle(w - S(48), S(16), S(32), S(32)) : Rectangle.Empty;
+        _discard = !Holding ? Rectangle.Empty
+            : _shelf.IsEmpty ? new Rectangle(w - S(48), S(16), S(32), S(32))
+            : new Rectangle(_shelf.Left - S(40), S(20), S(32), S(32));
 
         var fy = h - S(FooterH);
         _gear = new Rectangle(w - S(44), fy + S(8), S(32), S(32));
         _refresh = new Rectangle(w - S(80), fy + S(8), S(32), S(32));
         _quiet = new Rectangle(w - S(116), fy + S(8), S(32), S(32));
         var again = TextRenderer.MeasureText("Search again", Ui.Body, Size.Empty, TextFormatFlags.NoPadding);
-        _again = _devices.Count == 0 ? new Rectangle(S(16), _list.Top + _shelfH + S(70), again.Width, S(24)) : Rectangle.Empty;
+        _again = _devices.Count == 0 ? new Rectangle(S(16), _list.Top + _trayH + S(70), again.Width, S(24)) : Rectangle.Empty;
     }
 
     int RecentAt(Point p)
@@ -355,10 +368,28 @@ sealed class DropPanel : Form
         Collapse();
     }
 
-    int RowAt(Point p)
+    int TileAt(Point p)
     {
         if (!_list.Contains(p)) return -1;
+        for (var i = 0; i < _tiles.Count; i++) if (_tiles[i].Contains(p)) return i;
+        return -1;
+    }
+
+    void TakeOffShelf(int i)
+    {
+        _pending!.RemoveAt(i);
+        _hoverTile = -1;
+        if (_pending.Count == 0) { _pending = null; _dragTitle = _dragSub = null; }
+        else SummarizePaths(_pending.ToArray());
+        Measure();
+        Invalidate();
+    }
+
+    int RowAt(Point p)
+    {
         if (_shelf.Contains(p)) return ShelfRow;
+        if (!_list.Contains(p)) return -1;
+        if (_dragging && _tray.Contains(p)) return ShelfRow;
         if (_everyone.Contains(p)) return Everyone;
         if (_qr.Contains(p)) return QrRow;
         for (var i = 0; i < _rows.Count; i++) if (_rows[i].Contains(p)) return i;
@@ -380,17 +411,20 @@ sealed class DropPanel : Form
 
         // Header: what you're holding, or what to do.
         var title = _dragTitle != null ? $"Send {_dragTitle}" : "Send to";
-        var sub = _dragSub ?? (_devices.Count == 0 ? "No devices found yet" : "Drop files on a device, or select one to choose files");
-        var titleW = w - 2 * pad - (Holding ? S(40) : 0);
+        var sub = _hoverTile >= 0 && _hoverTile < TileFiles
+            ? $"{Path.GetFileName(_pending![_hoverTile].TrimEnd('\\'))}. Click to take it off"
+            : _dragSub ?? (_devices.Count == 0 ? "No devices found yet" : "Drop files on a device, or click one");
+        var titleW = (_discard.IsEmpty ? _shelf.IsEmpty ? w - pad : _shelf.Left : _discard.Left) - pad - S(8);
         Ui.DrawText(g, title, Ui.BodyStrong, new Rectangle(pad, S(16), titleW, S(20)), Ui.Text);
         Ui.DrawText(g, sub, Ui.Caption, new Rectangle(pad, S(38), titleW, S(18)), Ui.TextSecondary);
         if (Holding) PaintIcon(g, _discard, Ui.GlyphClose, "discard");
+        if (!_shelf.IsEmpty) PaintShelf(g, _shelf);
 
         g.SetClip(_list);
         if (_devices.Count == 0) PaintEmpty(g, pad, w);
         if (!_everyone.IsEmpty) PaintEveryone(g, _everyone);
         PaintQrRow(g, _qr);
-        if (!_shelf.IsEmpty) PaintShelfRow(g, _shelf);
+        if (_tiles.Count > 0) PaintTray(g);
         for (var i = 0; i < _devices.Count; i++)
             if (_rows[i].IntersectsWith(_list)) PaintRow(g, _devices[i], _rows[i], i);
         if (ShowRecent)
@@ -456,7 +490,7 @@ sealed class DropPanel : Form
 
     void PaintEmpty(Graphics g, int pad, int w)
     {
-        var y = _list.Top + _shelfH + S(8);
+        var y = _list.Top + _trayH + S(8);
         Ui.DrawText(g, "No devices nearby", Ui.Body, new Rectangle(pad, y, w - 2 * pad, S(20)), Ui.Text);
         TextRenderer.DrawText(g, "Other PCs need LocalSend Drop open, phones need LocalSend, and both need to be on this network.",
             Ui.Caption, new Rectangle(pad, y + S(24), w - 2 * pad, S(36)), Ui.TextSecondary,
@@ -477,19 +511,98 @@ sealed class DropPanel : Form
             new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
     }
 
-    void PaintShelfRow(Graphics g, Rectangle r)
+    /// <summary>Tiles that stand for one file each; the last one may be "+3" instead.</summary>
+    int TileFiles => _pending == null ? 0 : _pending.Count > _tiles.Count ? _tiles.Count - 1 : _tiles.Count;
+
+    void PaintTray(Graphics g)
+    {
+        var radius = S(6);
+        for (var i = 0; i < _tiles.Count; i++)
+        {
+            var r = _tiles[i];
+            var hover = i == _hoverTile;
+            Ui.FillRound(g, hover ? Ui.ControlHover : Ui.ControlFill, r, radius);
+            if (i >= TileFiles)
+            {
+                Ui.DrawText(g, $"+{_pending!.Count - TileFiles}", Ui.BodyStrong, r, Ui.TextSecondary,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                Ui.StrokeRound(g, Ui.ControlStroke, r, radius);
+                continue;
+            }
+            var path = _pending![i];
+            var preview = Thumbs.Preview(path, () => { try { BeginInvoke(Invalidate); } catch { } });
+            var image = preview?.Image;
+            if (preview is { Photo: true })
+            {
+                // A real preview fills the tile, cropped to a square.
+                var side = Math.Min(image!.Width, image.Height);
+                var src = new Rectangle((image.Width - side) / 2, (image.Height - side) / 2, side, side);
+                using var clip = Ui.Round(r, Ui.Radius(r, radius));
+                var state = g.Save();
+                g.SetClip(clip, System.Drawing.Drawing2D.CombineMode.Intersect);
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.DrawImage(image, r, src, GraphicsUnit.Pixel);
+                g.Restore(state);
+            }
+            else if (image != null)
+            {
+                var s = S(32);
+                g.DrawImage(image, new Rectangle(r.Left + (r.Width - s) / 2, r.Top + (r.Height - s) / 2, s, s));
+            }
+            else
+                Ui.DrawIcon(g, Directory.Exists(path) ? Ui.GlyphFolder : Ui.GlyphShelf, 16f, r, Ui.TextSecondary);
+            Ui.StrokeRound(g, hover ? Ui.Accent : Ui.ControlStroke, r, radius);
+            if (hover)
+            {
+                // Remove badge in the corner.
+                var b = new Rectangle(r.Right - S(18), r.Top + S(2), S(16), S(16));
+                using (var fill = new SolidBrush(Ui.Solid(Ui.Flyout))) g.FillEllipse(fill, b);
+                Ui.DrawIcon(g, Ui.GlyphClose, 6.5f, b, Ui.Text);
+            }
+        }
+    }
+
+    /// <summary>The shelf: a drop box in the top right. Files dropped here wait until you pick a device.</summary>
+    void PaintShelf(Graphics g, Rectangle r)
     {
         var target = _dragOver == ShelfRow;
-        if (target || _hover == ShelfRow) Ui.FillRound(g, Ui.SubtleHover, r, S(4));
-        if (target) Ui.FillRound(g, Ui.Accent, new RectangleF(r.Left, r.Top + (r.Height - S(16)) / 2f, S(3), S(16)), S(2) / 2f + 0.5f);
-        var icon = new Rectangle(r.Left + S(12), r.Top, S(24), r.Height);
-        Ui.DrawIcon(g, Ui.GlyphShelf, 14f, icon, Ui.Text);
-        var x = icon.Right + S(12);
+        var inviting = _dragging && _dragHasFiles;
+        var radius = Ui.Radius(r, S(6));
+        if (target) Ui.FillRound(g, Ui.Accent, r, radius);
+        else if (_hover == ShelfRow || inviting) Ui.FillRound(g, Ui.SubtleHover, r, radius);
+        if (!target)
+        {
+            using var pen = new Pen(inviting ? Ui.Accent : Ui.StrongStroke, Math.Max(1, S(1)))
+                { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash };
+            using var path = Ui.Round(new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1, r.Height - 1), radius);
+            var smooth = g.SmoothingMode;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.DrawPath(pen, path);
+            g.SmoothingMode = smooth;
+        }
+        var fore = target ? Ui.TextOnAccent : inviting ? Ui.AccentText : Ui.TextSecondary;
+        Ui.DrawIcon(g, Ui.GlyphShelf, 13f, new Rectangle(r.Left, r.Top + S(5), r.Width, S(20)), fore);
         var onShelf = _pending?.Count ?? 0;
-        Ui.DrawText(g, onShelf > 0 ? $"Add to the shelf ({onShelf} there)" : "Keep on the shelf", Ui.Body,
-            new Rectangle(x, r.Top + S(9), r.Right - x - S(12), S(20)), Ui.Text);
-        Ui.DrawText(g, target ? "Release to keep it here" : "Collect files, then send them together", Ui.Caption,
-            new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
+        var label = target ? "Keep" : onShelf > 0 ? $"{onShelf} kept" : "Shelf";
+        Ui.DrawText(g, label, Ui.Caption, new Rectangle(r.Left, r.Top + S(26), r.Width, S(16)), fore,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+    }
+
+    /// <summary>Clicking the shelf: choose files to put on it.</summary>
+    void AddToShelf()
+    {
+        _modal = true;
+        try
+        {
+            using var dlg = new OpenFileDialog { Multiselect = true, Title = "Put on the shelf" };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            _pending = (_pending ?? []).Concat(dlg.FileNames).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            _pendingText = null;
+            SummarizePaths(_pending.ToArray());
+            Measure();
+            Invalidate();
+        }
+        finally { _modal = false; }
     }
 
     void PaintQrRow(Graphics g, Rectangle r)
@@ -581,15 +694,17 @@ sealed class DropPanel : Form
         if (TryDragOut(e)) return;
         var hover = RowAt(e.Location);
         var recent = RecentAt(e.Location);
+        var tile = TileAt(e.Location);
         var icon = _gear.Contains(e.Location) ? "gear" : _refresh.Contains(e.Location) ? "refresh"
                  : _again.Contains(e.Location) ? "again" : _discard.Contains(e.Location) ? "discard"
                  : _clear.Contains(e.Location) ? "clear" : _quiet.Contains(e.Location) ? "quiet" : null;
-        if (hover != _hover || icon != _hoverIcon || recent != _hoverRecent)
+        if (hover != _hover || icon != _hoverIcon || recent != _hoverRecent || tile != _hoverTile)
         {
             _hover = hover;
+            _hoverTile = tile;
             _hoverIcon = icon;
             _hoverRecent = recent;
-            Cursor = hover != -1 || recent >= 0 || icon != null ? Cursors.Hand : Cursors.Default;
+            Cursor = hover != -1 || recent >= 0 || icon != null || (tile >= 0 && tile < TileFiles) ? Cursors.Hand : Cursors.Default;
             Invalidate();
         }
     }
@@ -597,7 +712,7 @@ sealed class DropPanel : Form
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        _hover = _hoverRecent = -1;
+        _hover = _hoverRecent = _hoverTile = -1;
         _hoverIcon = null;
         Invalidate();
     }
@@ -617,10 +732,12 @@ sealed class DropPanel : Form
         if (_gear.Contains(e.Location)) { OpenSettings?.Invoke(); return; }
         if (_quiet.Contains(e.Location)) { ToggleQuiet?.Invoke(); Invalidate(); return; }
         if (_discard.Contains(e.Location)) { Collapse(); return; }
+        if (TileAt(e.Location) is var ti and >= 0) { if (ti < TileFiles) TakeOffShelf(ti); return; }
         if (_clear.Contains(e.Location)) { History.Clear(); return; }
         if (_refresh.Contains(e.Location) || _again.Contains(e.Location)) { Refresh_(); return; }
         var i = RowAt(e.Location);
-        if (i == Everyone) OnEveryoneClick();
+        if (i == ShelfRow) AddToShelf();
+        else if (i == Everyone) OnEveryoneClick();
         else if (i == QrRow) OnQrClick();
         else if (i >= 0) OnRowClick(_devices[i]);
     }
@@ -732,6 +849,7 @@ sealed class DropPanel : Form
     {
         base.OnDragOver(e);
         var i = Accepts(e) ? RowAt(PointToClient(new Point(e.X, e.Y))) : -1;
+        if (i == ShelfRow && !_dragHasFiles) i = -1;   // only files go on the shelf
         e.Effect = i != -1 ? DragDropEffects.Copy : DragDropEffects.None;
         if (i != _dragOver) { _dragOver = i; Invalidate(); }
     }
@@ -815,7 +933,6 @@ sealed class DropPanel : Form
             ? (folders == 1 ? "A folder, with everything inside" : $"{folders} folders, with everything inside")
             : folders > 0 ? $"{IncomingCard.FormatSize(size)} plus {folders} folder{(folders == 1 ? "" : "s")}"
             : IncomingCard.FormatSize(size);
-        if (Holding) _dragSub += ". Click a device to send";
     }
 
     // ---- sending ----

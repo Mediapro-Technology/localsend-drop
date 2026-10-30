@@ -34,6 +34,12 @@ static class Snapshot
                 panel.Show();
                 panel.ShowExpanded();
                 Save(panel, Path.Combine(folder, $"panel-{mode}.png"));
+                var shelf = Directory.GetFiles(folder, "panel-*.png").Take(2)
+                    .Concat(Directory.GetFiles(AppContext.BaseDirectory, "*.dll").Take(1))
+                    .Append(AppContext.BaseDirectory.TrimEnd('\\')).ToList();
+                panel.ShowShare(shelf);
+                for (var t = 0; t < 15; t++) { Thread.Sleep(100); Application.DoEvents(); }
+                Save(panel, Path.Combine(folder, $"shelf-{mode}.png"));
                 panel.ShowShareText("Meeting moved to 3 pm, room B");
                 Save(panel, Path.Combine(folder, $"panel-holding-{mode}.png"));
             }
