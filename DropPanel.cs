@@ -83,6 +83,11 @@ sealed class DropPanel : Form
         AllowDrop = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
 
+        _hoverOpen.Tick += (_, _) =>
+        {
+            _hoverOpen.Stop();
+            if (!_expanded && Bounds.Contains(Cursor.Position)) Expand(false);
+        };
         _openDelay.Tick += (_, _) =>
         {
             _openDelay.Stop();
@@ -237,7 +242,9 @@ sealed class DropPanel : Form
         var st = Settings.Current;
         int len = S(140), t = S(3);
         Ui.Chrome(Handle, round: false);
-        Bounds = new Rectangle(st.Right ? screen.Right - len : screen.Left, st.Bottom ? screen.Bottom - len : screen.Top, len, len);
+        Bounds = st.Center
+            ? new Rectangle(screen.Left + (screen.Width - S(160)) / 2, screen.Top, S(160), t + S(1))
+            : new Rectangle(st.Right ? screen.Right - len : screen.Left, st.Bottom ? screen.Bottom - len : screen.Top, len, len);
         if (st.ZoneStyle == "Mouth")
         {
             // The mouth is its own window; this one steps aside until it's needed.
@@ -247,6 +254,7 @@ sealed class DropPanel : Form
                 _mouth = new Mouth();
                 _mouth.Wanted += () => Expand(false);
                 _mouth.Ate += Shelve;
+                _mouth.Grabbed += () => { if (_expanded && !(Holding && !_shelved)) Collapse(); };
             }
             _mouth.Place();
             if (_ateFrom != null || _ateText) _mouth.Gulp(_ateFrom == null ? null : Thumbs.Preview(_ateFrom, () => { })?.Image);
@@ -255,10 +263,14 @@ sealed class DropPanel : Form
         else
         {
             _mouth?.Hide();
-            // An L hugging the corner: flinging a file at the corner always lands in it.
-            var region = new Region(new Rectangle(0, st.Bottom ? len - t : 0, len, t));
-            region.Union(new Rectangle(st.Right ? len - t : 0, 0, t, len));
-            Region = region;
+            if (st.Center) Region = new Region(new Rectangle(Point.Empty, Size));   // a short bar on the top edge
+            else
+            {
+                // An L hugging the corner: flinging a file at the corner always lands in it.
+                var region = new Region(new Rectangle(0, st.Bottom ? len - t : 0, len, t));
+                region.Union(new Rectangle(st.Right ? len - t : 0, 0, t, len));
+                Region = region;
+            }
         }
         _ateFrom = null;
         _ateText = false;
@@ -282,7 +294,7 @@ sealed class DropPanel : Form
             // Glass: blur whatever the panel is about to cover (its whole column, it may grow).
             var wa = Settings.Current.TargetScreen.WorkingArea;
             var w = S(Width_);
-            var x = Settings.Current.Right ? wa.Right - w - S(12) - MouthRoom : wa.Left + S(12) + MouthRoom;
+            var x = Settings.Current.ZoneX(wa, w, S(12) + MouthRoom);
             Effects.Capture(this, new Rectangle(x, wa.Top, w, wa.Height));
         }
         Measure();
@@ -319,7 +331,9 @@ sealed class DropPanel : Form
     // Windows 11 flyout metrics: 4 px list inset, 4 px item radius, 48 px footer.
     const int TrayH = 60, TileSize = 48, ShelfW = 76;
     /// <summary>With the little mouth, the panel opens beside it so the mouth stays in sight.</summary>
-    int MouthRoom => Settings.Current.ZoneStyle == "Mouth" ? S(52) : 0;
+    int MouthRoom => Settings.Current.ZoneStyle == "Mouth" && !Settings.Current.Center ? S(52) : 0;
+    /// <summary>At the top centre the mouth hangs down, so the panel opens below it.</summary>
+    int MouthDrop => Settings.Current.ZoneStyle == "Mouth" ? S(40) : 0;
     const int Width_ = 340, HeaderH = 72, RowH = 56, FooterH = 48, EmptyH = 112, RecentH = 48, RecentLabelH = 40, Inset = 4;
 
     /// <summary>Recent transfers are hidden while you're holding files, to keep the targets clear.</summary>
@@ -335,13 +349,14 @@ sealed class DropPanel : Form
         var listedH = _trayH + (_devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH));
         var devicesH = listedH + S(RowH) + S(8);   // + "Phone without the app"
         var contentH = devicesH + (ShowRecent ? S(RecentLabelH) + _recent.Count * S(RecentH) + S(8) : 0);
-        var maxContent = wa.Height - 2 * m - S(HeaderH + FooterH);
+        var maxContent = wa.Height - 2 * m - S(HeaderH + FooterH) - (Settings.Current.Center ? MouthDrop : 0);
         var listH = Math.Min(contentH, maxContent);
         var h = S(HeaderH) + listH + S(FooterH);
         _scroll = Math.Clamp(_scroll, 0, Math.Max(0, contentH - listH));
 
         var st = Settings.Current;
-        Bounds = new Rectangle(st.Right ? wa.Right - w - m - MouthRoom : wa.Left + m + MouthRoom, (st.Bottom ? wa.Bottom - h - m : wa.Top + m) + Effects.SlideOffset(this), w, h);
+        Bounds = new Rectangle(st.ZoneX(wa, w, m + MouthRoom),
+            (st.Bottom ? wa.Bottom - h - m : wa.Top + m + (st.Center ? MouthDrop : 0)) + Effects.SlideOffset(this), w, h);
 
         _list = new Rectangle(0, S(HeaderH), w, listH);
         _rows.Clear();
@@ -713,8 +728,13 @@ sealed class DropPanel : Form
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
-        if (!_expanded) Expand(false);
+        if (_expanded) return;
+        // The top edge is where browser tabs live: open only if the mouse stays a moment.
+        if (Settings.Current.Center) _hoverOpen.Start();
+        else Expand(false);
     }
+
+    readonly System.Windows.Forms.Timer _hoverOpen = new() { Interval = 350 };
 
     Point _pressAt;
     int _pressRecent = -1;

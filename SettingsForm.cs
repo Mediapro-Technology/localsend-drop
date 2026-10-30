@@ -511,7 +511,8 @@ sealed class ToggleSwitch : Drawn
 sealed class CornerPicker : Drawn
 {
     static readonly (string Key, string Name)[] Corners =
-        [("TopLeft", "top left"), ("TopRight", "top right"), ("BottomLeft", "bottom left"), ("BottomRight", "bottom right")];
+        [("TopLeft", "top left"), ("TopRight", "top right"), ("BottomLeft", "bottom left"), ("BottomRight", "bottom right"),
+         ("TopCenter", "top centre")];
 
     string _corner = "TopLeft";
     string? _monitor;
@@ -548,6 +549,9 @@ sealed class CornerPicker : Drawn
         foreach (var (screen, box, _) in _boxes)
         {
             if (!box.Contains(p)) continue;
+            // The middle third of the top half is the top centre.
+            if (p.Y < box.Top + box.Height / 2 && Math.Abs(p.X - (box.Left + box.Width / 2)) < box.Width / 6)
+                return (screen.DeviceName, "TopCenter");
             var right = p.X > box.Left + box.Width / 2;
             var bottom = p.Y > box.Top + box.Height / 2;
             return (screen.DeviceName, (bottom ? "Bottom" : "Top") + (right ? "Right" : "Left"));
@@ -605,6 +609,11 @@ sealed class CornerPicker : Drawn
     void DrawL(Graphics g, Rectangle s, string key, Color c)
     {
         int len = Math.Min(S(24), Math.Min(s.Width, s.Height) / 3), t = S(3), inset = S(6);
+        if (key == "TopCenter")
+        {
+            Ui.FillRound(g, c, new Rectangle(s.Left + (s.Width - len) / 2, s.Top + inset, len, t), t / 2f);
+            return;
+        }
         var right = key.EndsWith("Right");
         var bottom = key.StartsWith("Bottom");
         var x = right ? s.Right - inset - len : s.Left + inset;

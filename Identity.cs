@@ -63,7 +63,7 @@ sealed class Settings
     public string? SaveDir { get; set; }
     /// <summary>"ask", "known" (auto-accept trusted devices) or "all".</summary>
     public string ReceiveMode { get; set; } = "ask";
-    /// <summary>TopLeft, TopRight, BottomLeft or BottomRight.</summary>
+    /// <summary>TopLeft, TopRight, BottomLeft, BottomRight or TopCenter.</summary>
     public string Corner { get; set; } = "TopLeft";
     /// <summary>Screen.DeviceName of the chosen monitor; null = main monitor.</summary>
     public string? Monitor { get; set; }
@@ -93,6 +93,12 @@ sealed class Settings
 
     [System.Text.Json.Serialization.JsonIgnore] public bool Right => Corner.EndsWith("Right");
     [System.Text.Json.Serialization.JsonIgnore] public bool Bottom => Corner.StartsWith("Bottom");
+    /// <summary>The middle of the top edge instead of a corner.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public bool Center => Corner == "TopCenter";
+
+    /// <summary>Left edge for a window of width <paramref name="w"/> by the drop zone: a corner, or centred.</summary>
+    public int ZoneX(System.Drawing.Rectangle area, int w, int margin) =>
+        Center ? area.Left + (area.Width - w) / 2 : Right ? area.Right - w - margin : area.Left + margin;
 
     public static string DefaultSaveDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");

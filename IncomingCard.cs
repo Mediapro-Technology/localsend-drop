@@ -106,7 +106,7 @@ sealed class IncomingCard : Form
         var wa = Settings.Current.TargetScreen.WorkingArea;
         var st = Settings.Current;
         var m = S(12);
-        Bounds = new Rectangle(st.Right ? wa.Right - w - m : wa.Left + m, st.Bottom ? wa.Bottom - y - m : wa.Top + m, w, y);
+        Bounds = new Rectangle(st.ZoneX(wa, w, m), st.Bottom ? wa.Bottom - y - m : wa.Top + m, w, y);
         _close = new Rectangle(w - S(40), S(8), S(32), S(32));
         if (!Visible)
         {

@@ -51,6 +51,17 @@ static class Snapshot
                         g.Restore(state);
                     }
                     strip.Save(Path.Combine(folder, $"mouth-{mode}.png"));
+                    // The same, hanging from the top edge.
+                    g.Clear(Ui.Solid(Ui.Base));
+                    for (var i = 0; i < poses.Length; i++)
+                    {
+                        var state = g.Save();
+                        g.TranslateTransform(i * 120, 0);
+                        g.SetClip(new Rectangle(0, 0, 120, 120));
+                        Mouth.Paint(g, 1f, poses[i], new PointF(60, -4), 90);
+                        g.Restore(state);
+                    }
+                    strip.Save(Path.Combine(folder, $"mouth-top-{mode}.png"));
                 }
                 var shelf = Directory.GetFiles(folder, "panel-*.png").Take(2)
                     .Concat(Directory.GetFiles(AppContext.BaseDirectory, "*.dll").Take(1))
