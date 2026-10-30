@@ -18,11 +18,18 @@ static class Program
 
         // Explorer's "Send with LocalSend Drop" passes: --share "<path>"
         var share = args.Length >= 2 && args[0] == "--share" ? args.Skip(1).ToList() : null;
+        // Started from Windows' Share sheet?
+        string? shareText = null;
+        if (share == null && ShareTarget.Read() is { } shared)
+        {
+            if (shared.Paths.Count > 0) share = shared.Paths;
+            else shareText = shared.Text;
+        }
         var updated = args.Contains("--updated");
-        if (share != null && Mutex.TryOpenExisting(@"Local\LocalSendDrop", out var running))
+        if ((share != null || shareText != null) && Mutex.TryOpenExisting(@"Local\LocalSendDrop", out var running))
         {
             running.Dispose();
-            if (Shell.SendToRunning(share)) return 0;
+            if (shareText != null ? Shell.SendTextToRunning(shareText) : Shell.SendToRunning(share!)) return 0;
         }
 
         // Windows blocks drag-and-drop from Explorer into elevated windows, so an
@@ -39,7 +46,8 @@ static class Program
         using var openSettings = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\LocalSendDrop.settings");
         if (!first)
         {
-            if (share != null) Shell.SendToRunning(share);
+            if (shareText != null) Shell.SendTextToRunning(shareText);
+            else if (share != null) Shell.SendToRunning(share);
             else openSettings.Set(); // launching it again while it runs opens Settings
             return 0;
         }
@@ -127,7 +135,8 @@ static class Program
 
         // The package brings its own right-click entry; a plain .exe uses the classic one.
         if (Packaging.IsPackaged) Shell.Unregister(); else Shell.Register();
-        Shell.Listen(paths => panel.BeginInvoke(() => panel.ShowShare(paths)));
+        Shell.Listen(paths => panel.BeginInvoke(() => panel.ShowShare(paths)),
+                     text => panel.BeginInvoke(() => panel.ShowShareText(text)));
 
         // A plain .exe moves itself into the installed package, then hands over.
         async Task<bool> InstallPackage(bool mayPrompt)
@@ -279,6 +288,7 @@ static class Program
             else if (key == 2) Clip.Screenshot(panel, Notify);
         };
         if (share != null) panel.BeginInvoke(() => panel.ShowShare(share));
+        else if (shareText != null) panel.BeginInvoke(() => panel.ShowShareText(shareText));
         Application.Run();
         tray.Visible = false;
         discovery.Dispose();

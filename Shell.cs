@@ -51,7 +51,13 @@ static class Shell
     }
 
     /// <summary>Running copy: receive paths, batching ones that arrive close together.</summary>
-    public static void Listen(Action<List<string>> onPaths)
+    /// <summary>Second instance: pass shared text (from the Share sheet) to the running copy.</summary>
+    public static bool SendTextToRunning(string text) =>
+        SendToRunning([TextPrefix + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(text))]);
+
+    const string TextPrefix = "TEXT:";
+
+    public static void Listen(Action<List<string>> onPaths, Action<string> onText)
     {
         var batch = new List<string>();
         System.Threading.Timer? flush = null;
@@ -65,7 +71,11 @@ static class Shell
                     pipe.WaitForConnection();
                     using var r = new StreamReader(pipe);
                     while (r.ReadLine() is { } line)
-                        if (line.Length > 0) lock (batch) batch.Add(line);
+                    {
+                        if (line.StartsWith(TextPrefix))
+                            onText(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(line[TextPrefix.Length..])));
+                        else if (line.Length > 0) lock (batch) batch.Add(line);
+                    }
                     // Explorer launches the items one after another; wait for the rest.
                     flush?.Dispose();
                     flush = new System.Threading.Timer(_ =>
