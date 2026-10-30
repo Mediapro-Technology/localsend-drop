@@ -12,15 +12,15 @@ It speaks the [LocalSend protocol v2](https://github.com/localsend/protocol), so
 
 ## Install
 
-Open **PowerShell as administrator** and paste:
+1. Download **[LocalSendDrop-Setup.exe](../../releases/latest/download/LocalSendDrop-Setup.exe)**.
+2. Double-click it. SmartScreen: **More info**, then **Run anyway**. Windows asks for admin approval: **Yes**.
+3. Done: it trusts the Mediapro Technology certificate, installs the app (Start menu, right-click menu, firewall rules) and starts it.
 
-```powershell
-irm https://github.com/Mediapro-Technology/localsend-drop/releases/latest/download/install.ps1 | iex
-```
+It starts with Windows and updates itself from this repo's releases. Uninstall from **Settings > Apps**. Install it while signed in as the person who'll use it: the app is installed for the signed-in Windows account.
 
-That trusts the Mediapro Technology certificate, installs the app (Start menu, right-click menu, firewall rules) and starts it. It starts with Windows and updates itself from this repo's releases. Uninstall from **Settings > Apps**.
+Or, in PowerShell as administrator: `irm https://github.com/Mediapro-Technology/localsend-drop/releases/latest/download/install.ps1 | iex`
 
-Without PowerShell: download `LocalSendDrop.exe` from the [latest release](../../releases/latest) and run it (SmartScreen: **More info**, **Run anyway**). It asks once for admin approval, installs the package, and moves into it.
+Why not just the .msix? It's signed with our own certificate, and Windows won't open a package until the PC trusts its certificate, so the package can't install that certificate itself. The setup does both. With a bought code-signing certificate, double-clicking the .msix would be enough.
 
 PCs on 1.x move to the package on their next automatic update, with no prompt if they had already approved the certificate.
 
@@ -48,6 +48,7 @@ Diagnostics: `LocalSendDrop.exe --list` prints the devices it can see; `--send <
 | `Packaging.cs` | Package detection, certificate trust, installing the MSIX (and moving a plain .exe into it) |
 | `Updater.cs` | Self-update from GitHub releases, verified against the asset's SHA-256 digest |
 | `Shell.cs` | Pipe that batches multi-file right-click selections; classic menu entry for a plain .exe |
-| `shell/` | Package manifest, C++ `IExplorerCommand` right-click handler, `build.ps1` that packages and signs |
+| `shell/` | Package manifest, C++ `IExplorerCommand` right-click handler, `build.ps1` that packages, signs and builds the setup |
+| `setup/` | `LocalSendDrop-Setup.exe` (C++): carries the certificate and package, trusts one and installs the other |
 
 Settings, identity and history live in `%APPDATA%\LocalSendDrop`.

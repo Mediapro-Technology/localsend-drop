@@ -2,6 +2,7 @@
 # Installed copies pick it up within 6 hours (or via "Check for updates").
 #   ./release.ps1 2.0.1 "Fixed the thing"
 # Release assets:
+#   LocalSendDrop-Setup.exe  what people download: certificate + package, installs everything
 #   LocalSendDrop.msix  the app package (installed copies update from this)
 #   LocalSendDrop.exe   plain exe: a 1.x install updates to it, then it moves into the package
 #   LocalSendDrop.cer   certificate install.ps1 trusts
@@ -36,6 +37,6 @@ $ErrorActionPreference = "Stop"
 # Notes go through a file: Windows PowerShell mangles quotes inside native arguments.
 $notesFile = New-TemporaryFile
 Set-Content $notesFile $Notes -Encoding utf8
-gh release create "v$Version" "$root\dist\LocalSendDrop.msix" "$root\dist\LocalSendDrop.exe" "$root\dist\LocalSendDrop.cer" "$root\install.ps1" `
+gh release create "v$Version" "$root\dist\LocalSendDrop-Setup.exe" "$root\dist\LocalSendDrop.msix" "$root\dist\LocalSendDrop.exe" "$root\dist\LocalSendDrop.cer" "$root\install.ps1" `
     --repo Mediapro-Technology/localsend-drop --title "LocalSend Drop $Version" --notes-file $notesFile
 Remove-Item $notesFile

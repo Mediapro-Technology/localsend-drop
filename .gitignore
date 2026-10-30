@@ -5,3 +5,5 @@ dist/
 .vs/
 shell/obj/
 !shell/bin/
+setup/obj/
+setup/version.h
