@@ -20,7 +20,8 @@ sealed class Mouth : Form
 
     readonly System.Windows.Forms.Timer _tick = new() { Interval = 16 };
     readonly System.Windows.Forms.Timer _blink = new() { Interval = 5000 };
-    readonly System.Windows.Forms.Timer _want = new() { Interval = 220 };
+    // A file held here this long opens the panel; dropped sooner, it just goes on the shelf.
+    readonly System.Windows.Forms.Timer _want = new() { Interval = 600 };
     double _open, _openTarget;
     DateTime _gulpStart = DateTime.MinValue, _blinkStart = DateTime.MinValue;
     Image? _food;
@@ -266,6 +267,15 @@ sealed class Mouth : Form
         _openTarget = 1;
         _tick.Start();
         _want.Start();
+    }
+
+    protected override void OnDragLeave(EventArgs e)
+    {
+        base.OnDragLeave(e);
+        if (!_want.Enabled) return;   // the panel is open: it handles the mouth from here
+        _want.Stop();
+        _openTarget = 0;
+        _tick.Start();
     }
 
     protected override void OnDragOver(DragEventArgs e)

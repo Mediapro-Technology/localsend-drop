@@ -22,7 +22,10 @@ sealed class DropPanel : Form
     List<string>? _pending;           // files from Explorer's "Send with…", waiting for a device
     string? _pendingText;             // copied text (Ctrl+Alt+S), waiting for a device
     bool Holding => _pending != null || _pendingText != null;
-    bool _shelved;                    // _pending came from the shelf: it outlives the panel closing
+    bool _shelved;
+    // Dragging onto the closed corner: open after a moment, so a quick drop just shelves the files.
+    readonly System.Windows.Forms.Timer _openDelay = new() { Interval = 600 };
+    IDataObject? _dragData;                    // _pending came from the shelf: it outlives the panel closing
     const int Everyone = -2;          // RowAt() result for the "Everyone nearby" row
     const int QrRow = -3;             // RowAt() result for "Phone without the app"
     const int ShelfRow = -4;          // RowAt() result for the shelf box (top right) and the files on it
@@ -80,6 +83,13 @@ sealed class DropPanel : Form
         AllowDrop = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
 
+        _openDelay.Tick += (_, _) =>
+        {
+            _openDelay.Stop();
+            Expand(false);
+            Measure();
+            Summarize(_dragData);
+        };
         _leaveTimer.Tick += (_, _) =>
         {
             if (!_expanded || _modal || (Holding && !_shelved)) return;
@@ -625,9 +635,10 @@ sealed class DropPanel : Form
         _pending = (_pending ?? []).Concat(files).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         _pendingText = null;
         SummarizePaths(_pending.ToArray());
-        Expand(false);
-        Measure();
-        Invalidate();
+        if (_expanded) { Measure(); Invalidate(); return; }
+        // Closed: the mouth's gulp says it worked; the strip needs a word.
+        if (Settings.Current.ZoneStyle != "Mouth")
+            _notify(_pending.Count == 1 ? "1 file on the shelf" : $"{_pending.Count} files on the shelf", false);
     }
 
     /// <summary>Clicking the shelf: choose files to put on it.</summary>
@@ -882,15 +893,22 @@ sealed class DropPanel : Form
         base.OnDragEnter(e);
         _dragging = true;
         _dragHasFiles = e.Data?.GetDataPresent(DataFormats.FileDrop) == true;
-        Expand(false);
+        _dragData = e.Data;
+        if (!_expanded)
+        {
+            e.Effect = _dragHasFiles ? DragDropEffects.Copy : DragDropEffects.None;
+            _openDelay.Start();
+            return;
+        }
         Measure();
-        Summarize(e);
+        Summarize(e.Data);
         OnDragOver(e);
     }
 
     protected override void OnDragOver(DragEventArgs e)
     {
         base.OnDragOver(e);
+        if (!_expanded) { e.Effect = _dragHasFiles ? DragDropEffects.Copy : DragDropEffects.None; return; }
         var i = Accepts(e) ? RowAt(PointToClient(new Point(e.X, e.Y))) : -1;
         if (i == ShelfRow && !_dragHasFiles) i = -1;   // only files go on the shelf
         e.Effect = i != -1 ? DragDropEffects.Copy : DragDropEffects.None;
@@ -900,6 +918,7 @@ sealed class DropPanel : Form
     protected override void OnDragLeave(EventArgs e)
     {
         base.OnDragLeave(e);
+        _openDelay.Stop();
         EndDrag();
         _dragOver = -1;
         Invalidate();
@@ -908,6 +927,14 @@ sealed class DropPanel : Form
     protected override void OnDragDrop(DragEventArgs e)
     {
         base.OnDragDrop(e);
+        if (!_expanded)
+        {
+            // Dropped on the closed corner before the panel opened: shelve it.
+            _openDelay.Stop();
+            _dragging = false;
+            if (e.Data?.GetData(DataFormats.FileDrop) is string[] quick && quick.Length > 0) Shelve(quick);
+            return;
+        }
         var i = _dragOver;
         _dragOver = -1;
         _dragTitle = _dragSub = null;
@@ -956,11 +983,11 @@ sealed class DropPanel : Form
     }
 
     /// <summary>Header shows what's in hand: "report.pdf" / "2.1 MB".</summary>
-    void Summarize(DragEventArgs e)
+    void Summarize(IDataObject? data)
     {
-        if (e.Data?.GetData(DataFormats.FileDrop) is string[] dropped && dropped.Length > 0)
+        if (data?.GetData(DataFormats.FileDrop) is string[] dropped && dropped.Length > 0)
             SummarizePaths(dropped);
-        else if (e.Data?.GetDataPresent(DataFormats.UnicodeText) == true)
+        else if (data?.GetDataPresent(DataFormats.UnicodeText) == true)
         {
             _dragTitle = "Text";
             _dragSub = "Arrives as a message";
