@@ -60,16 +60,42 @@ sealed class DropPanel : Form
             if (!r.Contains(Cursor.Position)) Collapse();
         };
         // Stay above other always-on-top windows (Chrome's fullscreen video, picture-in-picture).
-        var onTop = new System.Windows.Forms.Timer { Interval = 2000 };
-        onTop.Tick += (_, _) => { if (IsHandleCreated && Visible) Ui.KeepOnTop(Handle); };
-        onTop.Start();
-        _discovery.Changed += () => { if (IsHandleCreated) BeginInvoke(Reload); };
-        History.Changed += () =>
+        _onTop.Tick += (_, _) => { if (IsHandleCreated && Visible) Ui.KeepOnTop(Handle); };
+        _onTop.Start();
+        _discovery.Changed += OnDevicesChanged;
+        History.Changed += OnHistoryChanged;
+        Ui.Changed += OnThemeChanged;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
+    }
+
+    readonly System.Windows.Forms.Timer _onTop = new() { Interval = 2000 };
+
+    // These come from other threads or outlive the window: run them on the UI
+    // thread, and never after the panel has been closed.
+    void Post(Action action)
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        try { BeginInvoke(() => { if (!IsDisposed) action(); }); }
+        catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException) { }
+    }
+
+    void OnDevicesChanged() => Post(Reload);
+    void OnHistoryChanged() => Post(() => { _recent = History.Latest(5).ToList(); if (_expanded) { Measure(); Invalidate(); } });
+    void OnThemeChanged() => Post(() => { Ui.Chrome(Handle, _expanded); Invalidate(); });
+    void OnDisplayChanged(object? sender, EventArgs e) => Post(Reposition);
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
         {
-            if (IsHandleCreated) BeginInvoke(() => { _recent = History.Latest(5).ToList(); if (_expanded) { Measure(); Invalidate(); } });
-        };
-        Ui.Changed += () => { if (IsHandleCreated) BeginInvoke(() => { Ui.Chrome(Handle, _expanded); Invalidate(); }); };
-        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (_, _) => BeginInvoke(Reposition);
+            _onTop.Dispose();
+            _leaveTimer.Dispose();
+            _discovery.Changed -= OnDevicesChanged;
+            History.Changed -= OnHistoryChanged;
+            Ui.Changed -= OnThemeChanged;
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
+        }
+        base.Dispose(disposing);
     }
 
     int S(int v) => LogicalToDeviceUnits(v);
@@ -158,6 +184,7 @@ sealed class DropPanel : Form
         _refreshing = true;
         Invalidate();
         try { await _discovery.RefreshAsync(); } catch { }
+        if (IsDisposed) return; // closed while searching
         _refreshing = false;
         if (_expanded) Invalidate();
     }
@@ -567,6 +594,7 @@ sealed class DropPanel : Form
 
         // Show the result on the row for a moment, then go back to normal.
         await Task.Delay(6000);
+        if (IsDisposed) return;
         if (_sending.TryGetValue(d.Fingerprint, out var cur) && cur == st) _sending.Remove(d.Fingerprint);
         Invalidate();
     }

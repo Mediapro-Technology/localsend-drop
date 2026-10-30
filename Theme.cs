@@ -36,6 +36,22 @@ static class Ui
 
     public static event Action? Changed;
 
+    /// <summary>
+    /// Runs <paramref name="apply"/> on the control's UI thread whenever the theme
+    /// changes, and stops once the control is disposed (closed windows never repaint).
+    /// </summary>
+    public static void OnChange(Control c, Action apply)
+    {
+        void Handler()
+        {
+            if (!c.IsHandleCreated || c.IsDisposed) return;
+            try { c.BeginInvoke(() => { if (!c.IsDisposed) apply(); }); }
+            catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException) { }
+        }
+        Changed += Handler;
+        c.Disposed += (_, _) => Changed -= Handler;
+    }
+
     static Ui()
     {
         Load();
@@ -236,15 +252,7 @@ abstract class Drawn : Control
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint |
                  ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
-        Ui.Changed += OnThemeChanged;
-    }
-
-    void OnThemeChanged() { if (IsHandleCreated) BeginInvoke(Invalidate); }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) Ui.Changed -= OnThemeChanged;
-        base.Dispose(disposing);
+        Ui.OnChange(this, Invalidate);
     }
 
     protected float Scale_ => DeviceDpi / 96f;

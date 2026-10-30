@@ -40,7 +40,7 @@ sealed class IncomingCard : Form
         onTop.Tick += (_, _) => { if (IsHandleCreated && Visible) Ui.KeepOnTop(Handle); };
         onTop.Start();
         Controls.AddRange([_primary, _secondary]);
-        Ui.Changed += () => { if (IsHandleCreated) BeginInvoke(() => { BackColor = Ui.Flyout; Ui.Chrome(Handle); Invalidate(true); }); };
+        Ui.OnChange(this, () => { BackColor = Ui.Flyout; Ui.Chrome(Handle); Invalidate(true); });
         BackColor = Ui.Flyout;
     }
 

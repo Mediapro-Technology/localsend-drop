@@ -146,7 +146,8 @@ static class Program
             bool ok;
             try
             {
-                f = open = new SettingsForm(IsAutostart(), () => InstallPackage(mayPrompt: true));
+                f = open = new SettingsForm(IsAutostart(), () => InstallPackage(mayPrompt: true),
+                    status => CheckForUpdates(manual: true, status));
                 ok = f.ShowDialog() == DialogResult.OK;
             }
             catch (Exception ex)
@@ -196,24 +197,32 @@ static class Program
             Notify("LocalSend is also running. Quit it so files come to LocalSend Drop instead.", true);
 
         // Updates: check shortly after start, then every 6 hours; install when idle.
-        async Task CheckForUpdates(bool manual)
+        // status: where a manual check from Settings shows its progress; otherwise notifications.
+        async Task CheckForUpdates(bool manual, Action<string>? status = null)
         {
+            void Report(string text, bool error = false)
+            {
+                if (status != null) status(text);
+                else if (manual || error) Notify(text, error);
+            }
+            status?.Invoke("Checking for updates…");
             string? version;
             try { version = await Updater.DownloadIfNewerAsync(); }
             catch (Exception ex)
             {
-                if (manual) Notify($"Couldn't check for updates: {ex.Message}", true);
+                if (manual) Report($"Couldn't check for updates: {ex.Message}", true);
                 return;
             }
             if (version == null)
             {
-                if (manual) Notify($"You have the latest version ({Updater.CurrentText})", false);
+                if (manual) Report($"You're up to date. {Updater.CurrentText} is the latest version.");
                 return;
             }
+            if (panel.Busy || server.Busy) Report($"Version {version} will install when the current transfer finishes");
             while (panel.Busy || server.Busy) await Task.Delay(TimeSpan.FromSeconds(20));
-            Notify($"Updating to {version}…", false);
+            Report($"Installing {version}. LocalSend Drop will restart.");
             await Task.Delay(1500);
-            if (await Updater.ApplyAsync() is { } error) Notify($"Couldn't update to {version}: {error}", true);
+            if (await Updater.ApplyAsync() is { } error) Report($"Couldn't update to {version}: {error}", true);
             else if (!Packaging.IsPackaged) Application.Exit();
         }
         var updateTimer = new System.Windows.Forms.Timer { Interval = (int)TimeSpan.FromHours(6).TotalMilliseconds };

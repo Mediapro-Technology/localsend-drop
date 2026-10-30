@@ -20,6 +20,7 @@ sealed class SettingsForm : Form
     readonly ToggleSwitch _sound = new(), _autostart = new(), _update = new();
     readonly PillButton _forget = new("Forget");
     readonly PillButton _install = new("Install", primary: true);
+    readonly PillButton _checkUpdates = new("Check for updates");
     readonly PillButton _save = new("Save", primary: true);
     readonly PillButton _cancel = new("Cancel");
     readonly Card _folderCard;
@@ -28,7 +29,8 @@ sealed class SettingsForm : Form
     Rectangle _close;
     bool _closeHot;
 
-    public SettingsForm(bool autostart, Func<Task<bool>> install)
+    /// <param name="checkUpdates">Checks for (and installs) an update, reporting progress text.</param>
+    public SettingsForm(bool autostart, Func<Task<bool>> install, Func<Action<string>, Task> checkUpdates)
     {
         var s = Settings.Current;
         _installAction = install;
@@ -94,11 +96,24 @@ sealed class SettingsForm : Form
         _scroll.Add(new Card("Sound", "Play a sound when someone sends you something", right: _sound, rightWidth: 84));
         _scroll.Add(new Card("Start with Windows", "Keep the drop zone ready after you sign in", right: _autostart, rightWidth: 84));
         _scroll.Add(new Card("Updates", "Install new versions automatically", right: _update, rightWidth: 84));
+        Card versionCard = null!;
+        _scroll.Add(versionCard = new Card($"LocalSend Drop {Updater.CurrentText}", "Check whether a newer version is available",
+            right: _checkUpdates, rightWidth: 160));
+        _checkUpdates.Click += async (_, _) =>
+        {
+            _checkUpdates.Enabled = false;
+            await checkUpdates(text =>
+            {
+                // Settings may have been closed while it was checking.
+                if (IsHandleCreated && !IsDisposed) BeginInvoke(() => versionCard.Description = text);
+            });
+            if (!IsDisposed) _checkUpdates.Enabled = true;
+        };
         if (Packaging.Supported && !Packaging.IsPackaged)
             _scroll.Add(new Card("Install LocalSend Drop", "Adds it to the Start menu and the right-click menu", right: _install, rightWidth: 112));
 
         Controls.AddRange([_scroll, _save, _cancel]);
-        Ui.Changed += () => { if (IsHandleCreated) BeginInvoke(() => { BackColor = Ui.Base; Ui.Chrome(Handle); Ui.ThemeScrollbars(_scroll); Invalidate(true); }); };
+        Ui.OnChange(this, () => { BackColor = Ui.Base; Ui.Chrome(Handle); Ui.ThemeScrollbars(_scroll); Invalidate(true); });
     }
 
     int S(int v) => LogicalToDeviceUnits(v);
@@ -152,8 +167,6 @@ sealed class SettingsForm : Form
 
         var fy = h - S(FooterH);
         using (var line = new Pen(Ui.Divider)) g.DrawLine(line, 0, fy, w, fy);
-        Ui.DrawText(g, $"LocalSend Drop {Updater.CurrentText}", Ui.Caption,
-            new Rectangle(pad, _save.Top, S(240), _save.Height), Ui.TextSecondary);
     }
 
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
@@ -198,7 +211,7 @@ sealed class ScrollPanel : Panel
         AutoScroll = true;
         DoubleBuffered = true;
         BackColor = Ui.Base;
-        Ui.Changed += () => { if (IsHandleCreated) BeginInvoke(() => BackColor = Ui.Base); };
+        Ui.OnChange(this, () => BackColor = Ui.Base);
     }
 
     public void Add(Control c) { _items.Add(c); Controls.Add(c); }
@@ -307,7 +320,7 @@ sealed class TextField : Drawn
         Controls.Add(_box);
         Cursor = Cursors.IBeam;
         Recolor();
-        Ui.Changed += () => { if (IsHandleCreated) BeginInvoke(Recolor); };
+        Ui.OnChange(this, Recolor);
     }
 
     void Recolor()

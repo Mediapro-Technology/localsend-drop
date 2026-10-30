@@ -44,10 +44,13 @@ static class Snapshot
                 Save(card, Path.Combine(folder, $"card-receiving-{mode}.png"));
             }
 
-            using (var settings = new SettingsForm(true, () => Task.FromResult(false)) { Opacity = 0 })
+            using (var settings = new SettingsForm(true, () => Task.FromResult(false), _ => Task.CompletedTask) { Opacity = 0 })
             {
                 settings.Show();
                 Save(settings, Path.Combine(folder, $"settings-{mode}.png"));
+                settings.Controls.OfType<ScrollPanel>().First().AutoScrollPosition = new Point(0, 100_000);
+                settings.Refresh();
+                Save(settings, Path.Combine(folder, $"settings-bottom-{mode}.png"));
             }
         }
         return 0;
