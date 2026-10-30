@@ -84,7 +84,7 @@ sealed class DropPanel : Form
             if (!_expanded || _modal || Holding) return;
             var r = Bounds;
             r.Inflate(S(24), S(24));
-            if (!r.Contains(Cursor.Position)) Collapse();
+            if (!r.Contains(Cursor.Position) && !(_mouth is { Visible: true } && _mouth.Bounds.Contains(Cursor.Position))) Collapse();
         };
         // Stay above other always-on-top windows (Chrome's fullscreen video, picture-in-picture).
         _onTop.Tick += (_, _) => { if (IsHandleCreated && Visible) Ui.KeepOnTop(Handle); };
@@ -264,7 +264,7 @@ sealed class DropPanel : Form
             // Glass: blur whatever the panel is about to cover (its whole column, it may grow).
             var wa = Settings.Current.TargetScreen.WorkingArea;
             var w = S(Width_);
-            var x = Settings.Current.Right ? wa.Right - w - S(12) : wa.Left + S(12);
+            var x = Settings.Current.Right ? wa.Right - w - S(12) - MouthRoom : wa.Left + S(12) + MouthRoom;
             Effects.Capture(this, new Rectangle(x, wa.Top, w, wa.Height));
         }
         Measure();
@@ -300,6 +300,8 @@ sealed class DropPanel : Form
 
     // Windows 11 flyout metrics: 4 px list inset, 4 px item radius, 48 px footer.
     const int TrayH = 60, TileSize = 48, ShelfW = 76;
+    /// <summary>With the little mouth, the panel opens beside it so the mouth stays in sight.</summary>
+    int MouthRoom => Settings.Current.ZoneStyle == "Mouth" ? S(52) : 0;
     const int Width_ = 340, HeaderH = 72, RowH = 56, FooterH = 48, EmptyH = 112, RecentH = 48, RecentLabelH = 40, Inset = 4;
 
     /// <summary>Recent transfers are hidden while you're holding files, to keep the targets clear.</summary>
@@ -321,7 +323,7 @@ sealed class DropPanel : Form
         _scroll = Math.Clamp(_scroll, 0, Math.Max(0, contentH - listH));
 
         var st = Settings.Current;
-        Bounds = new Rectangle(st.Right ? wa.Right - w - m : wa.Left + m, st.Bottom ? wa.Bottom - h - m : wa.Top + m, w, h);
+        Bounds = new Rectangle(st.Right ? wa.Right - w - m - MouthRoom : wa.Left + m + MouthRoom, st.Bottom ? wa.Bottom - h - m : wa.Top + m, w, h);
 
         _list = new Rectangle(0, S(HeaderH), w, listH);
         _rows.Clear();
