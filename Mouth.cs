@@ -24,10 +24,12 @@ sealed class Mouth : Form
     readonly System.Windows.Forms.Timer _want = new() { Interval = 600 };
     double _open, _openTarget;
     // Pull it: press and drag, and it stretches into a snake that follows the cursor.
-    readonly List<PointF> _path = [];   // screen points from home to the head
+    readonly List<PointF> _chain = [];  // screen points from the head back towards home
+    PointF _home, _headVel;
     bool _pulling, _retracting;
     Point _pressAt;
     double _retractSpeed;
+    long _snakeStart;
     DateTime _gulpStart = DateTime.MinValue, _blinkStart = DateTime.MinValue;
     Image? _food;
 
@@ -134,7 +136,8 @@ sealed class Mouth : Form
     /// <summary>Draws the creature with the corner at (0,0) and the screen towards +x, +y.</summary>
     /// <param name="center">Middle of the body; the corner default is just inside (0,0).</param>
     /// <param name="angle">Which way it faces, in degrees: 45 out of a corner, 90 down from the top edge.</param>
-    public static void Paint(Graphics g, float s, Pose p, PointF? center = null, float angle = 45)
+    /// <param name="face">Size of the eyes and mouth relative to the body (bigger on the snake's small head).</param>
+    public static void Paint(Graphics g, float s, Pose p, PointF? center = null, float angle = 45, float face = 1)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var body = Ui.Solid(Ui.Accent);
@@ -150,7 +153,7 @@ sealed class Mouth : Form
         PointF At(float along, float across) => new(c.X + dx * along - dy * across, c.Y + dy * along + dx * across);
 
         // Eyes
-        var e = (float)(5.5 * s * (1 + 0.15 * p.Open));
+        var e = (float)(5.5 * s * face * (1 + 0.15 * p.Open));
         foreach (var side in new[] { -1f, 1f })
         {
             var eye = At(r * 0.40f, side * r * 0.30f);
@@ -174,7 +177,7 @@ sealed class Mouth : Form
 
         // Mouth, across the diagonal.
         var m = At(r * 0.74f, 0);
-        var w = (float)((10 + 14 * p.Open) * s);
+        var w = (float)((10 + 14 * p.Open) * s * face);
         var mouthState = g.Save();
         g.TranslateTransform(m.X, m.Y);
         g.RotateTransform(angle);   // local x points out of the edge, local y across
@@ -303,18 +306,16 @@ sealed class Mouth : Form
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (e.Button != MouseButtons.Left || _retracting) return;
+        if (e.Button != MouseButtons.Left || _retracting || _pulling) return;
         var p = Cursor.Position;
-        if (!_pulling)
-        {
-            if (Math.Abs(p.X - _pressAt.X) + Math.Abs(p.Y - _pressAt.Y) < 6 * Scale_) return;
-            _pulling = true;
-            _path.Clear();
-            _path.Add(Home());
-            Grabbed?.Invoke();
-        }
-        var last = _path[^1];
-        if (Math.Abs(p.X - last.X) + Math.Abs(p.Y - last.Y) >= 3 * Scale_) _path.Add(p);
+        if (Math.Abs(p.X - _pressAt.X) + Math.Abs(p.Y - _pressAt.Y) < 6 * Scale_) return;
+        _pulling = true;
+        _home = Home();
+        _chain.Clear();
+        _chain.Add(_home);
+        _headVel = PointF.Empty;
+        _snakeStart = Environment.TickCount64;
+        Grabbed?.Invoke();
         _tick.Start();
     }
 
@@ -325,79 +326,195 @@ sealed class Mouth : Form
         if (!_pulling) { Wanted?.Invoke(); return; }   // a plain click opens the panel
         _pulling = false;
         _retracting = true;
-        _retractSpeed = 4 * Scale_;
+        _retractSpeed = 2 * Scale_;
         _tick.Start();
     }
 
     /// <summary>Pressed and pulled: the panel steps aside.</summary>
     public event Action? Grabbed;
 
+    float Link => 9 * Scale_;   // spacing between body points
+    float HeadR(double open) => (float)((34 + 12 * open) * Scale_ * 0.6);
+
     void SnakeStep()
     {
-        if (_retracting)
-        {
-            // Slither back along the same path, speeding up.
-            var budget = _retractSpeed;
-            _retractSpeed = Math.Min(_retractSpeed * 1.12, 60 * Scale_);
-            while (budget > 0 && _path.Count > 1)
-            {
-                var a = _path[^1];
-                var b = _path[^2];
-                var d = Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
-                if (d <= budget) { _path.RemoveAt(_path.Count - 1); budget -= d; continue; }
-                var f = (float)(budget / d);
-                _path[^1] = new PointF(a.X + (b.X - a.X) * f, a.Y + (b.Y - a.Y) * f);
-                budget = 0;
-            }
-            if (_path.Count <= 1)
-            {
-                _retracting = false;
-                _path.Clear();
-                Place();
-                _gulpStart = DateTime.UtcNow - GulpTime * 0.65;   // ends with the happy face
-                _tick.Start();
-                return;
-            }
-        }
+        if (_pulling) Pull(Cursor.Position);
+        else if (!Retract()) return;
+        Relax();
         RenderSnake();
     }
 
+    /// <summary>The head chases the cursor on a spring that gets stiffer to pull the longer the body.</summary>
+    void Pull(Point target)
+    {
+        var head = _chain[0];
+        var length = _chain.Count * Link;
+        var stiff = 0.14f / (1 + length / (900 * Scale_));
+        _headVel = new PointF(_headVel.X * 0.74f + (target.X - head.X) * stiff, _headVel.Y * 0.74f + (target.Y - head.Y) * stiff);
+        _chain[0] = new PointF(head.X + _headVel.X, head.Y + _headVel.Y);
+
+        // Each point follows the one in front, so the body traces the path the head took.
+        for (var i = 1; i < _chain.Count; i++)
+        {
+            var a = _chain[i - 1];
+            var b = _chain[i];
+            var d = Dist(a, b);
+            if (d > Link) _chain[i] = new PointF(a.X + (b.X - a.X) / d * Link, a.Y + (b.Y - a.Y) / d * Link);
+        }
+        // Still joined to home: grow towards it, or drop links that have curled back onto it.
+        while (_chain.Count > 1 && Dist(_chain[^2], _home) <= Link) _chain.RemoveAt(_chain.Count - 1);
+        while (Dist(_chain[^1], _home) > Link && _chain.Count < 600)
+        {
+            var t = _chain[^1];
+            var d = Dist(t, _home);
+            _chain.Add(new PointF(t.X + (_home.X - t.X) / d * Link, t.Y + (_home.Y - t.Y) / d * Link));
+        }
+    }
+
+    /// <summary>Let go: the head eases back along its own body, slow at first, then quicker.</summary>
+    bool Retract()
+    {
+        var budget = _retractSpeed;
+        _retractSpeed = Math.Min(_retractSpeed * 1.09 + 0.4 * Scale_, 70 * Scale_);
+        while (budget > 0 && _chain.Count > 1)
+        {
+            var a = _chain[0];
+            var b = _chain[1];
+            var d = Dist(a, b);
+            if (d <= budget) { _chain.RemoveAt(0); budget -= d; continue; }
+            var f = (float)(budget / d);
+            _chain[0] = new PointF(a.X + (b.X - a.X) * f, a.Y + (b.Y - a.Y) * f);
+            budget = 0;
+        }
+        if (_chain.Count > 1 && Dist(_chain[0], _home) > 1) return true;
+        _retracting = false;
+        _chain.Clear();
+        Place();
+        _gulpStart = DateTime.UtcNow - GulpTime * 0.65;   // back home: a little squash and a happy face
+        _tick.Start();
+        return false;
+    }
+
+    /// <summary>Body tension: every point drifts a little towards its neighbours, smoothing kinks into curves.</summary>
+    void Relax()
+    {
+        for (var i = 1; i < _chain.Count - 1; i++)
+        {
+            var a = _chain[i - 1];
+            var c = _chain[i + 1];
+            var b = _chain[i];
+            _chain[i] = new PointF(b.X + ((a.X + c.X) / 2 - b.X) * 0.18f, b.Y + ((a.Y + c.Y) / 2 - b.Y) * 0.18f);
+        }
+    }
+
+    static float Dist(PointF a, PointF b) => MathF.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+
     void RenderSnake()
     {
-        var s = Scale_;
-        var headR = 34 * s * 0.6f;
-        var pad = (int)(headR * 2 + 8 * s);
-        var minX = _path.Min(p => p.X); var maxX = _path.Max(p => p.X);
-        var minY = _path.Min(p => p.Y); var maxY = _path.Max(p => p.Y);
-        var box = Rectangle.FromLTRB((int)minX - pad, (int)minY - pad, (int)maxX + pad, (int)maxY + pad);
-        box.Intersect(Settings.Current.TargetScreen.Bounds);
-        if (box.Width <= 0 || box.Height <= 0) return;
+        if (SnakeFrame() is not { } frame) return;
+        using (frame.Image) Present(frame.Image, frame.At);
+    }
 
-        using var bmp = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppArgb);
+    /// <summary>Diagnostics (--snapshot): pull along these cursor points, then picture the snake.</summary>
+    public Bitmap? SimulatePull(PointF home, IEnumerable<Point> cursor)
+    {
+        _home = home;
+        _chain.Clear();
+        _chain.Add(home);
+        _headVel = PointF.Empty;
+        foreach (var p in cursor) { Pull(p); Relax(); }
+        return SnakeFrame()?.Image;
+    }
+
+    (Bitmap Image, Point At)? SnakeFrame()
+    {
+        var s = Scale_;
+        var open = _retracting ? 0 : 0.5;
+        var headR = HeadR(open);
+        var spine = Smooth([.. _chain, _home]);
+        var pad = (int)(headR * 2.4f);
+        var box = Rectangle.FromLTRB((int)spine.Min(p => p.X) - pad, (int)spine.Min(p => p.Y) - pad,
+            (int)spine.Max(p => p.X) + pad, (int)spine.Max(p => p.Y) + pad);
+        box.Intersect(Settings.Current.TargetScreen.Bounds);
+        if (box.Width <= 0 || box.Height <= 0) return null;
+
+        var bmp = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.Clear(Color.Transparent);
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            var pts = _path.Select(p => new PointF(p.X - box.Left, p.Y - box.Top)).ToArray();
+            g.TranslateTransform(-box.Left, -box.Top);
             var body = Ui.Solid(Ui.Accent);
-            if (pts.Length > 1)
+            if (spine.Length > 1)
             {
-                using var edge = new Pen(Ui.Blend(body, Color.Black, 0.25), 28 * s) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
-                using var fill = new Pen(body, 25 * s) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
-                using var belly = new Pen(Ui.Blend(body, Color.White, 0.35), 6 * s)
-                    { LineJoin = LineJoin.Round, DashCap = DashCap.Round, DashPattern = [1.2f, 1.6f] };
-                g.DrawLines(edge, pts);
-                g.DrawLines(fill, pts);
-                g.DrawLines(belly, pts);
+                // As wide as the head where it joins, a little slimmer where it comes out; a slow slither runs along it.
+                var time = (Environment.TickCount64 - _snakeStart) / 1000f;
+                var left = new PointF[spine.Length];
+                var right = new PointF[spine.Length];
+                var centre = new PointF[spine.Length];
+                for (var i = 0; i < spine.Length; i++)
+                {
+                    var t = i / (float)(spine.Length - 1);
+                    var prev = spine[Math.Max(0, i - 1)];
+                    var next = spine[Math.Min(spine.Length - 1, i + 1)];
+                    var tx = next.X - prev.X; var ty = next.Y - prev.Y;
+                    var tl = MathF.Max(0.001f, MathF.Sqrt(tx * tx + ty * ty));
+                    var nx = -ty / tl; var ny = tx / tl;
+                    var wiggle = MathF.Sin(time * 7 - i * 0.35f) * 2.2f * s * MathF.Sin(t * MathF.PI);
+                    var c = new PointF(spine[i].X + nx * wiggle, spine[i].Y + ny * wiggle);
+                    var half = headR * (0.92f - 0.22f * t);
+                    centre[i] = c;
+                    left[i] = new PointF(c.X + nx * half, c.Y + ny * half);
+                    right[i] = new PointF(c.X - nx * half, c.Y - ny * half);
+                }
+                using var outline = new GraphicsPath();
+                outline.AddLines(left);
+                outline.AddLines(right.Reverse().ToArray());
+                outline.CloseFigure();
+                using (var fill = new SolidBrush(body)) g.FillPath(fill, outline);
+                var tailR = headR * 0.70f;
+                var tail = centre[^1];
+                using (var fill = new SolidBrush(body)) g.FillEllipse(fill, tail.X - tailR, tail.Y - tailR, 2 * tailR, 2 * tailR);
+                using (var edge = new Pen(Ui.Blend(body, Color.Black, 0.25), 1.4f * s) { LineJoin = LineJoin.Round })
+                {
+                    g.DrawLines(edge, left);
+                    g.DrawLines(edge, right);
+                }
+                // Belly scales down the middle.
+                using var belly = new Pen(Ui.Blend(body, Color.White, 0.3), headR * 0.45f)
+                    { DashCap = DashCap.Round, DashPattern = [0.6f, 1.1f], LineJoin = LineJoin.Round };
+                g.DrawLines(belly, centre);
             }
-            // The head faces where it's going.
-            var head = pts[^1];
-            var from = pts.Length > 3 ? pts[^4] : pts[0];
-            var angle = (float)(Math.Atan2(head.Y - from.Y, head.X - from.X) * 180 / Math.PI);
-            if (pts.Length < 2 || (head.X == from.X && head.Y == from.Y)) angle = 90;
-            Paint(g, s * 0.6f, new Pose(_retracting ? 0 : 0.5), head, angle);
+            // The head looks where it's going.
+            var head = spine[0];
+            var from = spine[Math.Min(spine.Length - 1, 6)];
+            var angle = head == from ? 90 : MathF.Atan2(head.Y - from.Y, head.X - from.X) * 180 / MathF.PI;
+            var pts = new[] { head };
+            g.Transform.TransformPoints(pts);
+            g.ResetTransform();
+            Paint(g, s * 0.6f, new Pose(open), pts[0], angle, face: 1.45f);
         }
-        Present(bmp, box.Location);
+        return (bmp, box.Location);
+    }
+
+    /// <summary>A Catmull-Rom curve through the points: no corners anywhere along the body.</summary>
+    static PointF[] Smooth(List<PointF> p)
+    {
+        if (p.Count < 3) return [.. p];
+        var result = new List<PointF>(p.Count * 3);
+        for (var i = 0; i < p.Count - 1; i++)
+        {
+            var p0 = p[Math.Max(0, i - 1)]; var p1 = p[i]; var p2 = p[i + 1]; var p3 = p[Math.Min(p.Count - 1, i + 2)];
+            for (var k = 0; k < 3; k++)
+            {
+                var t = k / 3f; var t2 = t * t; var t3 = t2 * t;
+                result.Add(new PointF(
+                    0.5f * (2 * p1.X + (-p0.X + p2.X) * t + (2 * p0.X - 5 * p1.X + 4 * p2.X - p3.X) * t2 + (-p0.X + 3 * p1.X - 3 * p2.X + p3.X) * t3),
+                    0.5f * (2 * p1.Y + (-p0.Y + p2.Y) * t + (2 * p0.Y - 5 * p1.Y + 4 * p2.Y - p3.Y) * t2 + (-p0.Y + 3 * p1.Y - 3 * p2.Y + p3.Y) * t3)));
+            }
+        }
+        result.Add(p[^1]);
+        return [.. result];
     }
 
     protected override void OnMouseEnter(EventArgs e)

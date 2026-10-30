@@ -62,6 +62,18 @@ static class Snapshot
                         g.Restore(state);
                     }
                     strip.Save(Path.Combine(folder, $"mouth-top-{mode}.png"));
+                    // A pulled snake: a wavy drag from the top-left corner, held for a moment at the end.
+                    using var m = new Mouth();
+                    var wa = Settings.Current.TargetScreen.Bounds;
+                    var drag = Enumerable.Range(0, 90).Select(i => new Point(wa.Left + 30 + i * 9, wa.Top + 200 + (int)(120 * Math.Sin(i / 12.0))))
+                        .Concat(Enumerable.Repeat(new Point(wa.Left + 30 + 89 * 9, wa.Top + 200 + (int)(120 * Math.Sin(89 / 12.0))), 40));
+                    using var snake = m.SimulatePull(new PointF(wa.Left + 8, wa.Top + 8), drag);
+                    if (snake != null)
+                    {
+                        using var shot = new Bitmap(snake.Width, snake.Height);
+                        using (var sg = Graphics.FromImage(shot)) { sg.Clear(Ui.Solid(Ui.Base)); sg.DrawImage(snake, 0, 0); }
+                        shot.Save(Path.Combine(folder, $"snake-{mode}.png"));
+                    }
                 }
                 var shelf = Directory.GetFiles(folder, "panel-*.png").Take(2)
                     .Concat(Directory.GetFiles(AppContext.BaseDirectory, "*.dll").Take(1))
