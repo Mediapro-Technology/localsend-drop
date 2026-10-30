@@ -23,11 +23,17 @@ static class Snapshot
             discovery.Upsert(new DeviceInfo { Alias = "Sara's Pixel 8", DeviceModel = "Google", DeviceType = "mobile", Fingerprint = "B2" }, IPAddress.Loopback);
             discovery.Upsert(new DeviceInfo { Alias = "Studio iMac", DeviceModel = "Mac", DeviceType = "desktop", Fingerprint = "C3" }, IPAddress.Loopback);
 
+            // Sample nickname and pin, in memory only (never saved).
+            Settings.Current.Nicknames["C3"] = "Design studio";
+            if (!Settings.Current.Favorites.Contains("C3")) Settings.Current.Favorites.Add("C3");
+
             using (var panel = new DropPanel(id, discovery, (_, _) => { }) { Opacity = 0 })
             {
                 panel.Show();
                 panel.ShowExpanded();
                 Save(panel, Path.Combine(folder, $"panel-{mode}.png"));
+                panel.ShowShareText("Meeting moved to 3 pm, room B");
+                Save(panel, Path.Combine(folder, $"panel-holding-{mode}.png"));
             }
 
             using (var card = new IncomingCard { Opacity = 0 })

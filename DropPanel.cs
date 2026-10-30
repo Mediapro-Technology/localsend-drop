@@ -18,18 +18,23 @@ sealed class DropPanel : Form
     List<Device> _devices = [];
     string? _dragTitle, _dragSub;   // what's being dragged, shown in the header
     int _hover = -1, _dragOver = -1, _scroll;
-    string? _hoverIcon;               // "gear" | "refresh" | "again" | "discard"
+    string? _hoverIcon;               // "gear" | "refresh" | "again" | "discard" | "clear"
     List<string>? _pending;           // files from Explorer's "Send with…", waiting for a device
+    string? _pendingText;             // copied text (Ctrl+Alt+S), waiting for a device
+    bool Holding => _pending != null || _pendingText != null;
+    const int Everyone = -2;          // RowAt() result for the "Everyone nearby" row
     List<HistoryEntry> _recent = [];
     int _hoverRecent = -1;
 
     // layout (device pixels), rebuilt in Measure()
     readonly List<Rectangle> _rows = [];
     readonly List<Rectangle> _recentRows = [];
-    Rectangle _gear, _refresh, _again, _list, _discard;
+    Rectangle _gear, _refresh, _again, _list, _discard, _clear, _everyone, _quiet;
     int _recentLabelY;
 
     public Action? OpenSettings;
+    /// <summary>Footer button: turns Do not disturb on or off.</summary>
+    public Action? ToggleQuiet;
 
     sealed class SendState
     {
@@ -54,7 +59,7 @@ sealed class DropPanel : Form
 
         _leaveTimer.Tick += (_, _) =>
         {
-            if (!_expanded || _modal || _pending != null) return;
+            if (!_expanded || _modal || Holding) return;
             var r = Bounds;
             r.Inflate(S(24), S(24));
             if (!r.Contains(Cursor.Position)) Collapse();
@@ -112,6 +117,25 @@ sealed class DropPanel : Form
 
     protected override bool ShowWithoutActivation => true;
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint key);
+
+    /// <summary>1 = Ctrl+Alt+S (send what you copied), 2 = Ctrl+Alt+Shift+S (screenshot).</summary>
+    public event Action<int>? Hotkey;
+
+    /// <summary>Registers the shortcuts; false for any another app already owns.</summary>
+    public (bool Clipboard, bool Screenshot) RegisterHotkeys()
+    {
+        const uint Alt = 1, Ctrl = 2, Shift = 4, NoRepeat = 0x4000;
+        return (RegisterHotKey(Handle, 1, Ctrl | Alt | NoRepeat, 'S'), RegisterHotKey(Handle, 2, Ctrl | Alt | Shift | NoRepeat, 'S'));
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x0312) Hotkey?.Invoke((int)m.WParam); // WM_HOTKEY
+        base.WndProc(ref m);
+    }
+
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
@@ -127,11 +151,33 @@ sealed class DropPanel : Form
     public void ShowShare(List<string> paths)
     {
         _pending = paths;
+        _pendingText = null;
         SummarizePaths(paths.ToArray());
         Expand(false);
         Measure();
         Invalidate();
     }
+
+    /// <summary>Copied text (Ctrl+Alt+S): open with it in hand; it arrives as a message.</summary>
+    public void ShowShareText(string text)
+    {
+        _pending = null;
+        _pendingText = text;
+        var firstLine = text.Replace("\r", "").Split('\n')[0].Trim();
+        _dragTitle = firstLine.Length > 0 ? $"\u201C{firstLine}\u201D" : "text";
+        _dragSub = "Arrives as a message. Click a device to send";
+        Expand(false);
+        Measure();
+        Invalidate();
+    }
+
+    /// <summary>The name you gave a device, or its own.</summary>
+    static string Name(Device d) => Settings.Current.Nicknames.GetValueOrDefault(d.Fingerprint) ?? d.Alias;
+
+    /// <summary>Pinned devices first, then by name.</summary>
+    List<Device> Ordered() => _discovery.Devices
+        .OrderByDescending(d => Settings.Current.Favorites.Contains(d.Fingerprint))
+        .ThenBy(Name, StringComparer.CurrentCultureIgnoreCase).ToList();
 
     /// <summary>Re-applies the corner after settings change.</summary>
     public void Reposition()
@@ -147,6 +193,7 @@ sealed class DropPanel : Form
         _leaveTimer.Stop();
         _dragTitle = _dragSub = null;
         _pending = null;
+        _pendingText = null;
         _hover = _dragOver = _hoverRecent = -1;
         _scroll = 0;
         var screen = Settings.Current.TargetScreen.Bounds;
@@ -168,7 +215,7 @@ sealed class DropPanel : Form
         _expanded = true;
         Region = null;
         Ui.Chrome(Handle);
-        _devices = _discovery.Devices.ToList();
+        _devices = Ordered();
         _recent = History.Latest(5).ToList();
         Measure();
         Ui.KeepOnTop(Handle);
@@ -194,7 +241,7 @@ sealed class DropPanel : Form
         if (!_expanded) return;
         // Keep the row order stable while something is dragged over it.
         if (_dragOver >= 0 && _discovery.Devices.Count == _devices.Count) { Invalidate(); return; }
-        _devices = _discovery.Devices.ToList();
+        _devices = Ordered();
         Measure();
         Invalidate();
     }
@@ -203,14 +250,15 @@ sealed class DropPanel : Form
     const int Width_ = 340, HeaderH = 72, RowH = 56, FooterH = 48, EmptyH = 112, RecentH = 48, RecentLabelH = 40, Inset = 4;
 
     /// <summary>Recent transfers are hidden while you're holding files, to keep the targets clear.</summary>
-    bool ShowRecent => _dragTitle == null && _pending == null && _recent.Count > 0;
+    bool ShowRecent => _dragTitle == null && !Holding && _recent.Count > 0;
 
     /// <summary>Sizes the window to its content and lays out hit areas.</summary>
     void Measure()
     {
         var wa = Settings.Current.TargetScreen.WorkingArea;
         int m = S(12), w = S(Width_);
-        var devicesH = _devices.Count == 0 ? S(EmptyH) : _devices.Count * S(RowH) + S(8);
+        var everyoneH = _devices.Count >= 2 ? S(RowH) : 0;
+        var devicesH = _devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH) + S(8);
         var contentH = devicesH + (ShowRecent ? S(RecentLabelH) + _recent.Count * S(RecentH) + S(8) : 0);
         var maxContent = wa.Height - 2 * m - S(HeaderH + FooterH);
         var listH = Math.Min(contentH, maxContent);
@@ -222,21 +270,26 @@ sealed class DropPanel : Form
 
         _list = new Rectangle(0, S(HeaderH), w, listH);
         _rows.Clear();
+        _everyone = everyoneH > 0 ? new Rectangle(S(Inset), _list.Top - _scroll, w - S(2 * Inset), S(RowH)) : Rectangle.Empty;
         for (var i = 0; i < _devices.Count; i++)
-            _rows.Add(new Rectangle(S(Inset), _list.Top + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
+            _rows.Add(new Rectangle(S(Inset), _list.Top + everyoneH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
 
         _recentRows.Clear();
+        _clear = Rectangle.Empty;
         if (ShowRecent)
         {
             _recentLabelY = _list.Top + devicesH - _scroll;
+            var cw = TextRenderer.MeasureText("Clear", Ui.Body, Size.Empty, TextFormatFlags.NoPadding).Width;
+            _clear = new Rectangle(w - S(16) - cw, _recentLabelY + S(12), cw, S(20));
             for (var i = 0; i < _recent.Count; i++)
                 _recentRows.Add(new Rectangle(S(Inset), _recentLabelY + S(RecentLabelH) + i * S(RecentH), w - S(2 * Inset), S(RecentH)));
         }
-        _discard = _pending != null ? new Rectangle(w - S(48), S(16), S(32), S(32)) : Rectangle.Empty;
+        _discard = Holding ? new Rectangle(w - S(48), S(16), S(32), S(32)) : Rectangle.Empty;
 
         var fy = h - S(FooterH);
         _gear = new Rectangle(w - S(44), fy + S(8), S(32), S(32));
         _refresh = new Rectangle(w - S(80), fy + S(8), S(32), S(32));
+        _quiet = new Rectangle(w - S(116), fy + S(8), S(32), S(32));
         var again = TextRenderer.MeasureText("Search again", Ui.Body, Size.Empty, TextFormatFlags.NoPadding);
         _again = _devices.Count == 0 ? new Rectangle(S(16), _list.Top + S(70), again.Width, S(24)) : Rectangle.Empty;
     }
@@ -250,6 +303,13 @@ sealed class DropPanel : Form
 
     void OnRecentClick(HistoryEntry h, bool reveal)
     {
+        if (h.Text != null)
+        {
+            Clipboard.SetText(h.Text);
+            _notify("Message copied", false);
+            return;
+        }
+        if (h.Received && !h.Ok) return; // nothing was saved
         if (!h.Received && !h.Ok && !reveal && CanRetry(h))
         {
             StartSend(_devices.First(x => x.Fingerprint == h.PeerFingerprint), Sender.FromPaths(h.Paths), h.Paths);
@@ -267,6 +327,7 @@ sealed class DropPanel : Form
     int RowAt(Point p)
     {
         if (!_list.Contains(p)) return -1;
+        if (_everyone.Contains(p)) return Everyone;
         for (var i = 0; i < _rows.Count; i++) if (_rows[i].Contains(p)) return i;
         return -1;
     }
@@ -287,19 +348,21 @@ sealed class DropPanel : Form
         // Header: what you're holding, or what to do.
         var title = _dragTitle != null ? $"Send {_dragTitle}" : "Send to";
         var sub = _dragSub ?? (_devices.Count == 0 ? "No devices found yet" : "Drop files on a device, or select one to choose files");
-        var titleW = w - 2 * pad - (_pending != null ? S(40) : 0);
+        var titleW = w - 2 * pad - (Holding ? S(40) : 0);
         Ui.DrawText(g, title, Ui.BodyStrong, new Rectangle(pad, S(16), titleW, S(20)), Ui.Text);
         Ui.DrawText(g, sub, Ui.Caption, new Rectangle(pad, S(38), titleW, S(18)), Ui.TextSecondary);
-        if (_pending != null) PaintIcon(g, _discard, Ui.GlyphClose, "discard");
+        if (Holding) PaintIcon(g, _discard, Ui.GlyphClose, "discard");
 
         g.SetClip(_list);
         if (_devices.Count == 0) PaintEmpty(g, pad, w);
+        if (!_everyone.IsEmpty) PaintEveryone(g, _everyone);
         for (var i = 0; i < _devices.Count; i++)
             if (_rows[i].IntersectsWith(_list)) PaintRow(g, _devices[i], _rows[i], i);
         if (ShowRecent)
         {
             using (var line = new Pen(Ui.Divider)) g.DrawLine(line, pad, _recentLabelY, w - pad, _recentLabelY);
             Ui.DrawText(g, "Recent", Ui.BodyStrong, new Rectangle(pad, _recentLabelY + S(12), w - 2 * pad, S(20)), Ui.Text);
+            Ui.DrawText(g, "Clear", Ui.Body, _clear, _hoverIcon == "clear" ? Ui.TextSecondary : Ui.AccentText);
             for (var i = 0; i < _recentRows.Count; i++)
                 if (_recentRows[i].IntersectsWith(_list)) PaintRecent(g, _recent[i], _recentRows[i], i == _hoverRecent);
         }
@@ -309,8 +372,18 @@ sealed class DropPanel : Form
         var fy = ClientSize.Height - S(FooterH);
         using (var b = new SolidBrush(Ui.Base)) g.FillRectangle(b, 0, fy, w, S(FooterH));
         using (var line = new Pen(Ui.Divider)) g.DrawLine(line, 0, fy, w, fy);
-        Ui.DrawText(g, _refreshing ? "Searching for devices…" : _id.Alias, Ui.Caption,
-            new Rectangle(pad, fy, _refresh.Left - pad - S(4), S(FooterH)), Ui.TextSecondary);
+        var footer = _refreshing ? "Searching for devices…"
+            : Settings.Current.DoNotDisturb ? "Do not disturb is on"
+            : Quiet.Auto ? "Quiet while you're presenting"
+            : _id.Alias;
+        Ui.DrawText(g, footer, Ui.Caption, new Rectangle(pad, fy, _quiet.Left - pad - S(4), S(FooterH)), Ui.TextSecondary);
+        // Like a Quick Settings toggle: accent-filled while on.
+        if (Settings.Current.DoNotDisturb)
+        {
+            Ui.FillRound(g, _hoverIcon == "quiet" ? Ui.AccentHover : Ui.Accent, _quiet, S(4));
+            Ui.DrawIcon(g, Ui.GlyphQuiet, 12f, _quiet, Ui.TextOnAccent);
+        }
+        else PaintIcon(g, _quiet, Ui.GlyphQuiet, "quiet");
         PaintIcon(g, _refresh, Ui.GlyphRefresh, "refresh");
         PaintIcon(g, _gear, Ui.GlyphSettings, "gear");
     }
@@ -355,6 +428,19 @@ sealed class DropPanel : Form
         Ui.DrawText(g, "Search again", Ui.Body, _again, _hoverIcon == "again" ? Ui.TextSecondary : Ui.AccentText);
     }
 
+    void PaintEveryone(Graphics g, Rectangle r)
+    {
+        var target = _dragOver == Everyone;
+        if (target || _hover == Everyone) Ui.FillRound(g, Ui.SubtleHover, r, S(4));
+        if (target) Ui.FillRound(g, Ui.Accent, new RectangleF(r.Left, r.Top + (r.Height - S(16)) / 2f, S(3), S(16)), S(2) / 2f + 0.5f);
+        var icon = new Rectangle(r.Left + S(12), r.Top, S(24), r.Height);
+        Ui.DrawIcon(g, Ui.GlyphPeople, 14f, icon, Ui.Text);
+        var x = icon.Right + S(12);
+        Ui.DrawText(g, "Everyone nearby", Ui.Body, new Rectangle(x, r.Top + S(9), r.Right - x - S(12), S(20)), Ui.Text);
+        Ui.DrawText(g, target ? $"Release to send to all {_devices.Count}" : $"Send to all {_devices.Count} devices at once", Ui.Caption,
+            new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
+    }
+
     void PaintRow(Graphics g, Device d, Rectangle r, int i)
     {
         _sending.TryGetValue(d.Fingerprint, out var st);
@@ -372,9 +458,15 @@ sealed class DropPanel : Form
         Color subColor = Ui.TextSecondary;
         if (target) { sub = "Release to send"; subColor = Ui.AccentText; }
         else if (st != null) { sub = st.Status; if (st.Error) subColor = Ui.Error; else if (st.Ok) subColor = Ui.Success; }
-        else sub = Ui.DeviceLabel(d);
+        else sub = Settings.Current.Nicknames.ContainsKey(d.Fingerprint) ? d.Alias : Ui.DeviceLabel(d);
 
-        Ui.DrawText(g, d.Alias, Ui.Body, new Rectangle(x, r.Top + S(9), tw, S(20)), Ui.Text);
+        if (Settings.Current.Favorites.Contains(d.Fingerprint))
+        {
+            var pin = new Rectangle(r.Right - S(32), r.Top, S(20), r.Height);
+            Ui.DrawIcon(g, Ui.GlyphPin, 10f, pin, Ui.TextTertiary);
+            tw -= S(24);
+        }
+        Ui.DrawText(g, Name(d), Ui.Body, new Rectangle(x, r.Top + S(9), tw, S(20)), Ui.Text);
         Ui.DrawText(g, sub, Ui.Caption, new Rectangle(x, r.Top + S(29), tw, S(18)), subColor);
         if (st?.Fraction is double f)
             Ui.Progress(g, new Rectangle(x, r.Bottom - S(8), tw, S(4)), f, DeviceDpi / 96f);
@@ -395,13 +487,14 @@ sealed class DropPanel : Form
         var hover = RowAt(e.Location);
         var recent = RecentAt(e.Location);
         var icon = _gear.Contains(e.Location) ? "gear" : _refresh.Contains(e.Location) ? "refresh"
-                 : _again.Contains(e.Location) ? "again" : _discard.Contains(e.Location) ? "discard" : null;
+                 : _again.Contains(e.Location) ? "again" : _discard.Contains(e.Location) ? "discard"
+                 : _clear.Contains(e.Location) ? "clear" : _quiet.Contains(e.Location) ? "quiet" : null;
         if (hover != _hover || icon != _hoverIcon || recent != _hoverRecent)
         {
             _hover = hover;
             _hoverIcon = icon;
             _hoverRecent = recent;
-            Cursor = hover >= 0 || recent >= 0 || icon != null ? Cursors.Hand : Cursors.Default;
+            Cursor = hover != -1 || recent >= 0 || icon != null ? Cursors.Hand : Cursors.Default;
             Invalidate();
         }
     }
@@ -419,12 +512,66 @@ sealed class DropPanel : Form
         base.OnMouseClick(e);
         if (!_expanded) return;
         if (RecentAt(e.Location) is var ri and >= 0) { OnRecentClick(_recent[ri], e.Button == MouseButtons.Right); return; }
+        if (e.Button == MouseButtons.Right)
+        {
+            if (RowAt(e.Location) is var di and >= 0) ShowDeviceMenu(_devices[di], e.Location);
+            return;
+        }
         if (e.Button != MouseButtons.Left) return;
         if (_gear.Contains(e.Location)) { OpenSettings?.Invoke(); return; }
+        if (_quiet.Contains(e.Location)) { ToggleQuiet?.Invoke(); Invalidate(); return; }
         if (_discard.Contains(e.Location)) { Collapse(); return; }
+        if (_clear.Contains(e.Location)) { History.Clear(); return; }
         if (_refresh.Contains(e.Location) || _again.Contains(e.Location)) { Refresh_(); return; }
         var i = RowAt(e.Location);
-        if (i >= 0) OnRowClick(_devices[i]);
+        if (i == Everyone) OnEveryoneClick();
+        else if (i >= 0) OnRowClick(_devices[i]);
+    }
+
+    // ---- nicknames and favourites ----
+
+    void ShowDeviceMenu(Device d, Point at)
+    {
+        var s = Settings.Current;
+        var menu = Ui.Menu();
+        menu.Items.Add("Rename…", null, (_, _) => BeginInvoke(() => Rename(d)));
+        if (s.Nicknames.ContainsKey(d.Fingerprint))
+            menu.Items.Add($"Use its own name ({d.Alias})", null, (_, _) => { s.Nicknames.Remove(d.Fingerprint); s.Save(); Reorder(); });
+        var pinned = s.Favorites.Contains(d.Fingerprint);
+        menu.Items.Add(pinned ? "Unpin" : "Pin to top", null, (_, _) =>
+        {
+            if (pinned) s.Favorites.Remove(d.Fingerprint); else s.Favorites.Add(d.Fingerprint);
+            s.Save();
+            Reorder();
+        });
+        _modal = true;
+        menu.Closed += (_, _) => _modal = false;
+        menu.Show(this, at);
+    }
+
+    void Rename(Device d)
+    {
+        _modal = true;
+        try
+        {
+            var s = Settings.Current;
+            var name = PromptForm.Ask($"Rename {d.Alias}", "Only you see this name", "Save",
+                s.Nicknames.GetValueOrDefault(d.Fingerprint) ?? d.Alias);
+            if (name == null) return;
+            name = name.Trim();
+            if (name.Length == 0 || name == d.Alias) s.Nicknames.Remove(d.Fingerprint);
+            else s.Nicknames[d.Fingerprint] = name;
+            s.Save();
+            Reorder();
+        }
+        finally { _modal = false; }
+    }
+
+    void Reorder()
+    {
+        _devices = Ordered();
+        Measure();
+        Invalidate();
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
@@ -453,7 +600,7 @@ sealed class DropPanel : Form
     {
         base.OnDragOver(e);
         var i = Accepts(e) ? RowAt(PointToClient(new Point(e.X, e.Y))) : -1;
-        e.Effect = i >= 0 ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Effect = i != -1 ? DragDropEffects.Copy : DragDropEffects.None;
         if (i != _dragOver) { _dragOver = i; Invalidate(); }
     }
 
@@ -471,8 +618,8 @@ sealed class DropPanel : Form
         _dragOver = -1;
         _dragTitle = _dragSub = null;
         Invalidate();
-        if (i < 0 || i >= _devices.Count) return;
-        var d = _devices[i];
+        var targets = i == Everyone ? _devices.ToList() : i >= 0 && i < _devices.Count ? [_devices[i]] : new List<Device>();
+        if (targets.Count == 0) return;
 
         List<SendItem> items;
         List<string> sources = [];
@@ -485,7 +632,7 @@ sealed class DropPanel : Form
             items = [new SendItem("message.txt", null, text)];
         else return;
         // Let Explorer finish its side of the drop before we do network work.
-        BeginInvoke(() => StartSend(d, items, sources));
+        BeginInvoke(() => { foreach (var d in targets) StartSend(d, items, sources); });
     }
 
     /// <summary>Header shows what's in hand: "report.pdf" / "2.1 MB".</summary>
@@ -510,20 +657,49 @@ sealed class DropPanel : Form
             ? (folders == 1 ? "A folder, with everything inside" : $"{folders} folders, with everything inside")
             : folders > 0 ? $"{IncomingCard.FormatSize(size)} plus {folders} folder{(folders == 1 ? "" : "s")}"
             : IncomingCard.FormatSize(size);
-        if (_pending != null) _dragSub += ". Click a device to send";
+        if (Holding) _dragSub += ". Click a device to send";
     }
 
     // ---- sending ----
 
+    /// <summary>Hands over what's being held (files or copied text) and clears it.</summary>
+    (List<SendItem> Items, List<string> Sources) TakePending()
+    {
+        var result = _pendingText != null
+            ? ([new SendItem("message.txt", null, _pendingText)], [])
+            : (Sender.FromPaths(_pending!), _pending!);
+        _pending = null;
+        _pendingText = null;
+        _dragTitle = _dragSub = null;
+        Measure();
+        return result;
+    }
+
+    void OnEveryoneClick()
+    {
+        var targets = _devices.ToList();
+        if (Holding)
+        {
+            var (items, sources) = TakePending();
+            foreach (var d in targets) StartSend(d, items, sources);
+            return;
+        }
+        _modal = true;
+        try
+        {
+            using var dlg = new OpenFileDialog { Multiselect = true, Title = "Send to everyone nearby" };
+            if (dlg.ShowDialog(this) == DialogResult.OK)
+                foreach (var d in targets) StartSend(d, Sender.FromPaths(dlg.FileNames), dlg.FileNames.ToList());
+        }
+        finally { _modal = false; }
+    }
+
     void OnRowClick(Device d)
     {
-        if (_pending != null)
+        if (Holding)
         {
-            var sources = _pending;
-            _pending = null;
-            _dragTitle = _dragSub = null;
-            Measure();
-            StartSend(d, Sender.FromPaths(sources), sources);
+            var (items, sources) = TakePending();
+            StartSend(d, items, sources);
             return;
         }
         if (_sending.TryGetValue(d.Fingerprint, out var st) && !st.Done)
@@ -534,7 +710,7 @@ sealed class DropPanel : Form
         _modal = true;
         try
         {
-            using var dlg = new OpenFileDialog { Multiselect = true, Title = $"Send to {d.Alias}" };
+            using var dlg = new OpenFileDialog { Multiselect = true, Title = $"Send to {Name(d)}" };
             if (dlg.ShowDialog(this) == DialogResult.OK) StartSend(d, Sender.FromPaths(dlg.FileNames), dlg.FileNames.ToList());
         }
         finally { _modal = false; }

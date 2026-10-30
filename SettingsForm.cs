@@ -17,7 +17,7 @@ sealed class SettingsForm : Form
     readonly PillButton _browse = new("Browse");
     readonly List<RadioRow> _modes = [];
     readonly CornerPicker _corner = new();
-    readonly ToggleSwitch _sound = new(), _autostart = new(), _update = new();
+    readonly ToggleSwitch _sound = new(), _autostart = new(), _update = new(), _quiet = new(), _autoQuiet = new();
     readonly PillButton _forget = new("Forget");
     readonly PillButton _install = new("Install", primary: true);
     readonly PillButton _checkUpdates = new("Check for updates");
@@ -58,6 +58,8 @@ sealed class SettingsForm : Form
         _sound.Checked = s.Sound;
         _autostart.Checked = autostart;
         _update.Checked = s.AutoUpdate;
+        _quiet.Checked = s.DoNotDisturb;
+        _autoQuiet.Checked = s.AutoQuiet;
         _forget.Click += (_, _) => { ForgetTrusted = true; _forget.Enabled = false; _forget.Text = "Forgotten"; };
         _install.Click += async (_, _) =>
         {
@@ -83,6 +85,8 @@ sealed class SettingsForm : Form
 
         _scroll.Add(new SectionHeader("Receiving"));
         _scroll.Add(new Card("When someone sends you files", null, below: [.. _modes]));
+        _scroll.Add(new Card("Do not disturb", "Decline incoming files. Recent shows who tried.", right: _quiet, rightWidth: 84));
+        _scroll.Add(new Card("Quiet while presenting", "Also when you're sharing a fullscreen app or playing a game", right: _autoQuiet, rightWidth: 84));
         var trusted = s.Trusted.Count;
         if (trusted > 0)
             _scroll.Add(new Card("Trusted devices",
@@ -91,6 +95,11 @@ sealed class SettingsForm : Form
         _scroll.Add(new SectionHeader("Drop zone"));
         _scroll.Add(new Card(Screen.AllScreens.Length > 1 ? "Monitor and corner" : "Corner",
             "Select a corner to move the drop zone there", below: [_corner]));
+
+        _scroll.Add(new SectionHeader("Shortcuts"));
+        static string Key(string keys, bool ok) => ok ? keys : $"{keys} (another app is using it)";
+        _scroll.Add(new Card("Send what you copied", Key("Ctrl + Alt + S", Program.Shortcuts.Clipboard)));
+        _scroll.Add(new Card("Send a screenshot", Key("Ctrl + Alt + Shift + S", Program.Shortcuts.Screenshot)));
 
         _scroll.Add(new SectionHeader("General"));
         _scroll.Add(new Card("Sound", "Play a sound when someone sends you something", right: _sound, rightWidth: 84));
@@ -198,6 +207,8 @@ sealed class SettingsForm : Form
     public bool Sound => _sound.Checked;
     public bool Autostart => _autostart.Checked;
     public bool AutoUpdate => _update.Checked;
+    public bool DoNotDisturb => _quiet.Checked;
+    public bool AutoQuiet => _autoQuiet.Checked;
     public bool ForgetTrusted { get; private set; }
 }
 

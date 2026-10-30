@@ -83,6 +83,17 @@ static class Program
         server.AskAccept = async (r, ct) =>
         {
             var s = Settings.Current;
+            if (Quiet.Active)
+            {
+                // Declined quietly; Recent shows who tried.
+                History.Add(new HistoryEntry
+                {
+                    Time = DateTime.UtcNow, Received = true, Peer = r.SenderAlias, PeerFingerprint = r.SenderFingerprint,
+                    Title = History.TitleFor(r.Files.Select(f => f.FileName).ToList()),
+                    Ok = false, Error = "declined during Do not disturb",
+                });
+                return false;
+            }
             var trusted = r.SenderFingerprint.Length > 0 && s.Trusted.Contains(r.SenderFingerprint);
             if (s.ReceiveMode == "all" || (s.ReceiveMode == "known" && trusted))
             {
@@ -97,7 +108,16 @@ static class Program
         server.Progress += (s, got, total) => card.BeginInvoke(() => card.OnProgress(s, got, total));
         server.Finished += (s, saved) => card.BeginInvoke(() => card.OnFinished(s, saved));
         server.Failed += (s, reason) => card.BeginInvoke(() => card.OnFailed(s, reason));
-        server.MessageReceived += (alias, text) => card.BeginInvoke(() => card.OnMessage(alias, text));
+        server.MessageReceived += (alias, text) =>
+        {
+            var first = text.Replace("\r", "").Split('\n')[0].Trim();
+            History.Add(new HistoryEntry
+            {
+                Time = DateTime.UtcNow, Received = true, Peer = alias, Ok = true, Text = text,
+                Title = first.Length > 0 ? $"\u201C{first}\u201D" : "Message",
+            });
+            if (!Quiet.Active) card.BeginInvoke(() => card.OnMessage(alias, text));
+        };
         server.Ended += (r, saved, error) => History.Add(new HistoryEntry
         {
             Time = DateTime.UtcNow, Received = true, Peer = r.SenderAlias, PeerFingerprint = r.SenderFingerprint,
@@ -136,7 +156,19 @@ static class Program
             await InstallPackage(mayPrompt: first);
         }));
 
-        var menu = new ContextMenuStrip();
+        var menu = Ui.Menu();
+        var quiet = new ToolStripMenuItem("Do not disturb") { Checked = Settings.Current.DoNotDisturb };
+        void ToggleQuiet()
+        {
+            var st = Settings.Current;
+            st.DoNotDisturb = !st.DoNotDisturb;
+            st.Save();
+            quiet.Checked = st.DoNotDisturb;
+            panel.Invalidate();
+            Notify(st.DoNotDisturb ? "Do not disturb is on. Incoming files are declined." : "Do not disturb is off", false);
+        }
+        quiet.Click += (_, _) => ToggleQuiet();
+        panel.ToggleQuiet = ToggleQuiet;
         var thisPc = new ToolStripMenuItem($"This PC: {id.Alias}") { Enabled = false };
         SettingsForm? open = null;
         void ShowSettings()
@@ -166,6 +198,9 @@ static class Program
             s.Monitor = f.Monitor;
             s.Sound = f.Sound;
             s.AutoUpdate = f.AutoUpdate;
+            s.DoNotDisturb = f.DoNotDisturb;
+            s.AutoQuiet = f.AutoQuiet;
+            quiet.Checked = s.DoNotDisturb;
             if (f.ForgetTrusted) s.Trusted.Clear();
             s.Save();
             SetAutostart(f.Autostart);
@@ -185,6 +220,7 @@ static class Program
         menu.Items.Add("Open panel", null, (_, _) => panel.ShowExpanded());
         menu.Items.Add("Refresh devices", null, (_, _) => _ = discovery.RefreshAsync());
         menu.Items.Add("Open Downloads", null, (_, _) => Process.Start("explorer.exe", $"\"{server.SaveDir}\""));
+        menu.Items.Add(quiet);
         menu.Items.Add("Settings…", null, (_, _) => ShowSettings());
         menu.Items.Add("Check for updates", null, (_, _) => _ = CheckForUpdates(manual: true));
         menu.Items.Add(new ToolStripSeparator());
@@ -235,6 +271,13 @@ static class Program
         if (updated) Notify($"Updated to {Updater.CurrentText}", false);
 
         panel.Show();
+        Clip.CleanUp();
+        Shortcuts = panel.RegisterHotkeys();
+        panel.Hotkey += key =>
+        {
+            if (key == 1) Clip.SendClipboard(panel, Notify);
+            else if (key == 2) Clip.Screenshot(panel, Notify);
+        };
         if (share != null) panel.BeginInvoke(() => panel.ShowShare(share));
         Application.Run();
         tray.Visible = false;
@@ -242,6 +285,9 @@ static class Program
         server.DisposeAsync().AsTask().Wait(2000);
         return 0;
     }
+
+    /// <summary>Whether Ctrl+Alt+S and Ctrl+Alt+Shift+S could be registered (another app may own them).</summary>
+    public static (bool Clipboard, bool Screenshot) Shortcuts { get; private set; }
 
     static (Discovery, Server) StartNetwork(Identity id)
     {

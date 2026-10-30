@@ -74,6 +74,14 @@ sealed class Settings
         System.Windows.Forms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == Monitor) ?? System.Windows.Forms.Screen.PrimaryScreen!;
     public bool Sound { get; set; } = true;
     public bool AutoUpdate { get; set; } = true;
+    /// <summary>Decline incoming transfers (they're listed in Recent).</summary>
+    public bool DoNotDisturb { get; set; }
+    /// <summary>Also be quiet while presenting or running something fullscreen.</summary>
+    public bool AutoQuiet { get; set; } = true;
+    /// <summary>Names you gave devices, by fingerprint. Only you see them.</summary>
+    public Dictionary<string, string> Nicknames { get; set; } = [];
+    /// <summary>Pinned devices (fingerprints), listed first.</summary>
+    public List<string> Favorites { get; set; } = [];
     /// <summary>We asked once on first run; after that it's the Settings link.</summary>
     public bool ShellMenuOffered { get; set; }
     /// <summary>Fingerprints of senders accepted before.</summary>

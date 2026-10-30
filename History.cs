@@ -13,6 +13,8 @@ sealed class HistoryEntry
     public string Title { get; set; } = "";
     public bool Ok { get; set; }
     public string? Error { get; set; }
+    /// <summary>A received text message (no files).</summary>
+    public string? Text { get; set; }
 }
 
 /// <summary>The last few transfers, shown under "Recent" in the panel.</summary>
@@ -36,6 +38,16 @@ static class History
             Items.Insert(0, e);
             if (Items.Count > Keep) Items.RemoveRange(Keep, Items.Count - Keep);
             try { File.WriteAllText(FilePath, JsonSerializer.Serialize(Items)); } catch { }
+        }
+        Changed?.Invoke();
+    }
+
+    public static void Clear()
+    {
+        lock (Items)
+        {
+            Items.Clear();
+            try { File.WriteAllText(FilePath, "[]"); } catch { }
         }
         Changed?.Invoke();
     }

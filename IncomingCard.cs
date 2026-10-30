@@ -275,9 +275,10 @@ sealed class IncomingCard : Form
 /// <summary>A one-field dialog in the same style (used for PINs).</summary>
 sealed class PromptForm : Form
 {
-    public static string? Ask(string title, string hint, string action)
+    public static string? Ask(string title, string hint, string action, string initial = "")
     {
         using var f = new PromptForm(title, hint, action);
+        f._box.Text = initial;
         return f.ShowDialog() == DialogResult.OK && f._box.Text.Length > 0 ? f._box.Text : null;
     }
 

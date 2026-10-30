@@ -139,6 +139,51 @@ static class Ui
     public const string GlyphSettings = "", GlyphRefresh = "", GlyphClose = "";
     public const string GlyphDown = "", GlyphUp = "", GlyphCheck = "", GlyphMessage = "";
     public const string GlyphFolder = "", GlyphSend = "";
+    public const string GlyphQuiet = "", GlyphPeople = "", GlyphPin = "";
+
+    /// <summary>A right-click menu drawn like Windows 11's (rounded, themed).</summary>
+    public static ContextMenuStrip Menu()
+    {
+        var menu = new ContextMenuStrip { Renderer = new MenuRenderer(), ShowImageMargin = false, Font = Body, Padding = new Padding(4) };
+        menu.Opening += (_, _) =>
+        {
+            menu.BackColor = Flyout;
+            foreach (ToolStripItem i in menu.Items) { i.ForeColor = Text; i.Padding = new Padding(4, 6, 4, 6); }
+        };
+        menu.Opened += (_, _) => Chrome(menu.Handle, small: false);
+        return menu;
+    }
+
+    sealed class MenuRenderer : ToolStripRenderer
+    {
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e) => e.Graphics.Clear(Flyout);
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { }
+
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+        {
+            if (!e.Item.Selected || !e.Item.Enabled) return;
+            var r = new Rectangle(2, 1, e.Item.Width - 4, e.Item.Height - 2);
+            FillRound(e.Graphics, SubtleHover, r, 4 * e.Item.Owner!.DeviceDpi / 96f);
+        }
+
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            var r = e.TextRectangle;
+            if (e.Item is ToolStripMenuItem { Checked: true })
+                DrawIcon(e.Graphics, GlyphCheck, 9f, new Rectangle(e.Item.Width - r.Height - 8, r.Top, r.Height, r.Height), Text);
+            TextRenderer.DrawText(e.Graphics, e.Text, Body, r, e.Item.Enabled ? Text : TextTertiary,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+        {
+            using var pen = new Pen(Divider);
+            var y = e.Item.Height / 2;
+            e.Graphics.DrawLine(pen, 4, y, e.Item.Width - 4, y);
+        }
+
+        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e) { } // drawn with the text
+    }
 
     public static string DeviceGlyph(Device d) => d.DeviceType switch
     {
