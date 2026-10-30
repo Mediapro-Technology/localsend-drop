@@ -77,21 +77,40 @@ static class Effects
     public static void Show(Form f, int fromY)
     {
         if (Ui.Style == Ui.Look.Windows10) return;
-        var target = f.Location;
+        Stop(f);
+        var slide = new Slide { Offset = fromY };
+        Slides[f] = slide;
         f.Opacity = 0.01;
-        f.Location = new Point(target.X, target.Y + fromY);
+        f.Top += fromY;
         var started = Environment.TickCount64;
         const double duration = 180;
         var timer = new System.Windows.Forms.Timer { Interval = 10 };
         timer.Tick += (_, _) =>
         {
-            if (f.IsDisposed) { timer.Dispose(); return; }
+            if (f.IsDisposed || slide.Stopped) { timer.Dispose(); return; }
             var t = Math.Min(1, (Environment.TickCount64 - started) / duration);
             var e = 1 - Math.Pow(1 - t, 3);   // ease out
+            // Measured from where the window is now, so a re-layout mid-slide doesn't jump.
+            var home = f.Top - slide.Offset;
+            slide.Offset = t >= 1 ? 0 : (int)Math.Round(fromY * (1 - e));
             f.Opacity = t >= 1 ? 1 : Math.Max(0.01, e);
-            f.Location = new Point(f.Left, target.Y + (int)Math.Round(fromY * (1 - e)));
-            if (t >= 1) timer.Dispose();
+            f.Top = home + slide.Offset;
+            if (t >= 1) { timer.Dispose(); Slides.Remove(f); }
         };
         timer.Start();
+    }
+
+    sealed class Slide { public int Offset; public bool Stopped; }
+    static readonly Dictionary<Form, Slide> Slides = [];
+
+    /// <summary>How far the window still is from its place; add it when moving the window mid-slide.</summary>
+    public static int SlideOffset(Form f) => Slides.TryGetValue(f, out var s) ? s.Offset : 0;
+
+    /// <summary>Ends the open animation now (e.g. the window is closing): fully opaque, nothing moves it after.</summary>
+    public static void Stop(Form f)
+    {
+        if (!Slides.Remove(f, out var s)) return;
+        s.Stopped = true;
+        if (!f.IsDisposed) f.Opacity = 1;
     }
 }

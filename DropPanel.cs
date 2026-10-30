@@ -226,6 +226,8 @@ sealed class DropPanel : Form
     {
         _expanded = false;
         _leaveTimer.Stop();
+        Effects.Stop(this);
+        Opacity = 1;
         _dragTitle = _dragSub = null;
         if (!_shelved) _pending = null;
         _pendingText = null;
@@ -268,6 +270,8 @@ sealed class DropPanel : Form
         if (_expanded && !force) return;
         var opening = !_expanded;
         _expanded = true;
+        // Invisible before the corner shape goes, so nothing flashes before the fade-in.
+        if (opening && Ui.Style != Ui.Look.Windows10) Opacity = 0.01;
         Region = null;
         Ui.Chrome(Handle);
         _devices = Ordered();
@@ -337,7 +341,7 @@ sealed class DropPanel : Form
         _scroll = Math.Clamp(_scroll, 0, Math.Max(0, contentH - listH));
 
         var st = Settings.Current;
-        Bounds = new Rectangle(st.Right ? wa.Right - w - m - MouthRoom : wa.Left + m + MouthRoom, st.Bottom ? wa.Bottom - h - m : wa.Top + m, w, h);
+        Bounds = new Rectangle(st.Right ? wa.Right - w - m - MouthRoom : wa.Left + m + MouthRoom, (st.Bottom ? wa.Bottom - h - m : wa.Top + m) + Effects.SlideOffset(this), w, h);
 
         _list = new Rectangle(0, S(HeaderH), w, listH);
         _rows.Clear();
