@@ -56,8 +56,12 @@ static class Shell
         SendToRunning([TextPrefix + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(text))]);
 
     const string TextPrefix = "TEXT:";
+    const string SendToPrefix = "SENDTO:";
 
-    public static void Listen(Action<List<string>> onPaths, Action<string> onText)
+    /// <summary>Second instance: ask the running copy to pick files for a device (taskbar list).</summary>
+    public static bool SendToDeviceRunning(string fingerprint) => SendToRunning([SendToPrefix + fingerprint]);
+
+    public static void Listen(Action<List<string>> onPaths, Action<string> onText, Action<string> onSendTo)
     {
         var batch = new List<string>();
         System.Threading.Timer? flush = null;
@@ -72,7 +76,8 @@ static class Shell
                     using var r = new StreamReader(pipe);
                     while (r.ReadLine() is { } line)
                     {
-                        if (line.StartsWith(TextPrefix))
+                        if (line.StartsWith(SendToPrefix)) onSendTo(line[SendToPrefix.Length..]);
+                        else if (line.StartsWith(TextPrefix))
                             onText(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(line[TextPrefix.Length..])));
                         else if (line.Length > 0) lock (batch) batch.Add(line);
                     }

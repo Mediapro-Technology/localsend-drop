@@ -32,10 +32,24 @@ sealed class QrForm : Form
         BackColor = Ui.Base;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
         _stop.Click += (_, _) => Close();
-        _copy.Click += (_, _) => { Clipboard.SetText(_url); _copy.Text = "Copied"; };
+        _copy.Click += (_, _) =>
+        {
+            if (!_share.Upload) { Clipboard.SetText(_url); _copy.Text = "Copied"; return; }
+            string? last;
+            lock (_share.Received) last = _share.Received.LastOrDefault();
+            if (last != null) System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{last}\"");
+            else System.Diagnostics.Process.Start("explorer.exe", $"\"{Settings.Current.SaveDir ?? Settings.DefaultSaveDir}\"");
+        };
+        if (share.Upload)
+        {
+            Text = "Get files from a phone";
+            _stop.Text = "Done";
+            _copy.Text = "Open folder";
+        }
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) Close(); };
         Controls.AddRange([_stop, _copy]);
         share.Downloaded += OnDownloaded;
+        share.FileReceived += _ => OnDownloaded();
         Ui.OnChange(this, () => { BackColor = Ui.Base; Ui.Chrome(Handle); Invalidate(true); });
     }
 
@@ -85,7 +99,7 @@ sealed class QrForm : Form
         var g = e.Graphics;
         g.Clear(Ui.Base);
         int w = ClientSize.Width, pad = S(24);
-        Ui.DrawText(g, "Scan to download", Ui.Subtitle, new Rectangle(pad, S(20), w - pad - S(56), S(28)), Ui.Text);
+        Ui.DrawText(g, _share.Upload ? "Scan to send files here" : "Scan to download", Ui.Subtitle, new Rectangle(pad, S(20), w - pad - S(56), S(28)), Ui.Text);
         var what = _share.Items.Count switch
         {
             0 => "Text",
@@ -93,6 +107,7 @@ sealed class QrForm : Form
             var count => $"{count} files",
         };
         if (_share.Items.Count > 0) what += $", {IncomingCard.FormatSize(_share.Items.Sum(i => i.Size))}";
+        if (_share.Upload) what = "Their files are saved to this PC without asking";
         Ui.DrawText(g, what, Ui.Caption, new Rectangle(pad, S(50), w - 2 * pad, S(18)), Ui.TextSecondary);
         if (_closeHot) Ui.FillRound(g, Ui.SubtleHover, _close, S(4));
         Ui.DrawIcon(g, Ui.GlyphClose, 10f, _close, Ui.Text);
@@ -115,9 +130,15 @@ sealed class QrForm : Form
         TextRenderer.DrawText(g, "Their phone needs to be on the same Wi-Fi. The link stops working when you close this.",
             Ui.Caption, new Rectangle(pad, y0, w - 2 * pad, S(36)), Ui.TextSecondary,
             TextFormatFlags.WordBreak | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix);
-        var status = _share.Downloads == 0 ? "Waiting for someone to scan it" : $"Downloaded {_share.Downloads} time{(_share.Downloads == 1 ? "" : "s")}";
+        int received;
+        string? last;
+        lock (_share.Received) { received = _share.Received.Count; last = _share.Received.LastOrDefault(); }
+        var status = _share.Upload
+            ? received == 0 ? "Waiting for files" : received == 1 ? $"Received {Path.GetFileName(last)}" : $"Received {received} files"
+            : _share.Downloads == 0 ? "Waiting for someone to scan it" : $"Downloaded {_share.Downloads} time{(_share.Downloads == 1 ? "" : "s")}";
+        var done = _share.Upload ? received > 0 : _share.Downloads > 0;
         Ui.DrawText(g, status, Ui.Body, new Rectangle(pad, y0 + S(42), w - 2 * pad, S(22)),
-            _share.Downloads > 0 ? Ui.Success : Ui.Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            done ? Ui.Success : Ui.Text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 
     [DllImport("user32.dll")] static extern bool ReleaseCapture();

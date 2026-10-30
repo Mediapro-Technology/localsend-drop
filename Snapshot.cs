@@ -60,6 +60,8 @@ static class Snapshot
                 Save(card, Path.Combine(folder, $"card-receiving-{mode}.png"));
                 card.OnFileRequest(new FileRequest("HARSHID-PC", "A1", "127.0.0.1", 53317, "The signed contract from yesterday"));
                 Save(card, Path.Combine(folder, $"card-request-{mode}.png"));
+                card.OnMessage("HARSHID-PC", "A1", "https://www.mediaproav.com/projects/adipec");
+                Save(card, Path.Combine(folder, $"card-link-{mode}.png"));
             }
 
             if (Notes.For("A1").Count == 0)
@@ -73,6 +75,11 @@ static class Snapshot
             {
                 qr.Show();
                 Save(qr, Path.Combine(folder, $"qr-{mode}.png"));
+            }
+            using (var inbox = new QrForm(QrShare.Start("Rizwan PC", [], null, upload: true)) { Opacity = 0 })
+            {
+                inbox.Show();
+                Save(inbox, Path.Combine(folder, $"qr-inbox-{mode}.png"));
             }
 
             using (var notes = new NotesForm("A1", "HARSHID-PC", _ => Task.FromResult<string?>(null)) { Opacity = 0 })
@@ -105,6 +112,22 @@ static class Snapshot
         Console.Out.Flush();
         Thread.Sleep(60_000);
         Console.WriteLine($"downloads: {share.Downloads}");
+        server.DisposeAsync().AsTask().Wait(2000);
+        return 0;
+    }
+
+    /// <summary>Testing: `--qr-inbox` opens a phone-upload link, prints it, and lists what arrives.</summary>
+    public static int QrInbox()
+    {
+        var id = Identity.LoadOrCreate();
+        using var discovery = new Discovery(id);
+        var server = new Server(id, discovery);
+        server.StartAsync().GetAwaiter().GetResult();
+        var share = QrShare.Start(id.Alias, [], null, upload: true);
+        share.FileReceived += path => { Console.WriteLine($"received: {path}"); Console.Out.Flush(); };
+        Console.WriteLine(QrShare.Url(share));
+        Console.Out.Flush();
+        Thread.Sleep(45_000);
         server.DisposeAsync().AsTask().Wait(2000);
         return 0;
     }

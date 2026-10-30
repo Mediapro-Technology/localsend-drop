@@ -24,13 +24,16 @@ sealed class DropPanel : Form
     bool Holding => _pending != null || _pendingText != null;
     const int Everyone = -2;          // RowAt() result for the "Everyone nearby" row
     const int QrRow = -3;             // RowAt() result for "Phone without the app"
+    const int ShelfRow = -4;          // RowAt() result for "Keep on the shelf" (only while dragging files)
+    bool _dragging, _dragHasFiles;
+    int _shelfH;
     List<HistoryEntry> _recent = [];
     int _hoverRecent = -1;
 
     // layout (device pixels), rebuilt in Measure()
     readonly List<Rectangle> _rows = [];
     readonly List<Rectangle> _recentRows = [];
-    Rectangle _gear, _refresh, _again, _list, _discard, _clear, _everyone, _quiet, _qr;
+    Rectangle _gear, _refresh, _again, _list, _discard, _clear, _everyone, _quiet, _qr, _shelf;
     int _recentLabelY;
 
     public Action? OpenSettings;
@@ -38,6 +41,8 @@ sealed class DropPanel : Form
     public Action? ToggleQuiet;
     /// <summary>"Phone without the app": files (with paths) and/or text to share by QR code.</summary>
     public Action<List<SendItem>, string?>? ShareByQr;
+    /// <summary>"Get files from a phone": show an upload QR code.</summary>
+    public Action? ReceiveByQr;
     /// <summary>Device menu: open the conversation, or ask for a file.</summary>
     public Action<Device>? OpenNotes, AskForFile;
 
@@ -280,7 +285,8 @@ sealed class DropPanel : Form
         var wa = Settings.Current.TargetScreen.WorkingArea;
         int m = S(12), w = S(Width_);
         var everyoneH = _devices.Count >= 2 ? S(RowH) : 0;
-        var listedH = _devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH);
+        _shelfH = _dragging && _dragHasFiles ? S(RowH) : 0;
+        var listedH = _shelfH + (_devices.Count == 0 ? S(EmptyH) : everyoneH + _devices.Count * S(RowH));
         var devicesH = listedH + S(RowH) + S(8);   // + "Phone without the app"
         var contentH = devicesH + (ShowRecent ? S(RecentLabelH) + _recent.Count * S(RecentH) + S(8) : 0);
         var maxContent = wa.Height - 2 * m - S(HeaderH + FooterH);
@@ -293,9 +299,10 @@ sealed class DropPanel : Form
 
         _list = new Rectangle(0, S(HeaderH), w, listH);
         _rows.Clear();
-        _everyone = everyoneH > 0 ? new Rectangle(S(Inset), _list.Top - _scroll, w - S(2 * Inset), S(RowH)) : Rectangle.Empty;
+        _shelf = _shelfH > 0 ? new Rectangle(S(Inset), _list.Top - _scroll, w - S(2 * Inset), S(RowH)) : Rectangle.Empty;
+        _everyone = everyoneH > 0 ? new Rectangle(S(Inset), _list.Top + _shelfH - _scroll, w - S(2 * Inset), S(RowH)) : Rectangle.Empty;
         for (var i = 0; i < _devices.Count; i++)
-            _rows.Add(new Rectangle(S(Inset), _list.Top + everyoneH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
+            _rows.Add(new Rectangle(S(Inset), _list.Top + _shelfH + everyoneH + i * S(RowH) - _scroll, w - S(2 * Inset), S(RowH)));
 
         _qr = new Rectangle(S(Inset), _list.Top + listedH - _scroll, w - S(2 * Inset), S(RowH));
         _recentRows.Clear();
@@ -315,7 +322,7 @@ sealed class DropPanel : Form
         _refresh = new Rectangle(w - S(80), fy + S(8), S(32), S(32));
         _quiet = new Rectangle(w - S(116), fy + S(8), S(32), S(32));
         var again = TextRenderer.MeasureText("Search again", Ui.Body, Size.Empty, TextFormatFlags.NoPadding);
-        _again = _devices.Count == 0 ? new Rectangle(S(16), _list.Top + S(70), again.Width, S(24)) : Rectangle.Empty;
+        _again = _devices.Count == 0 ? new Rectangle(S(16), _list.Top + _shelfH + S(70), again.Width, S(24)) : Rectangle.Empty;
     }
 
     int RecentAt(Point p)
@@ -351,6 +358,7 @@ sealed class DropPanel : Form
     int RowAt(Point p)
     {
         if (!_list.Contains(p)) return -1;
+        if (_shelf.Contains(p)) return ShelfRow;
         if (_everyone.Contains(p)) return Everyone;
         if (_qr.Contains(p)) return QrRow;
         for (var i = 0; i < _rows.Count; i++) if (_rows[i].Contains(p)) return i;
@@ -382,6 +390,7 @@ sealed class DropPanel : Form
         if (_devices.Count == 0) PaintEmpty(g, pad, w);
         if (!_everyone.IsEmpty) PaintEveryone(g, _everyone);
         PaintQrRow(g, _qr);
+        if (!_shelf.IsEmpty) PaintShelfRow(g, _shelf);
         for (var i = 0; i < _devices.Count; i++)
             if (_rows[i].IntersectsWith(_list)) PaintRow(g, _devices[i], _rows[i], i);
         if (ShowRecent)
@@ -447,7 +456,7 @@ sealed class DropPanel : Form
 
     void PaintEmpty(Graphics g, int pad, int w)
     {
-        var y = _list.Top + S(8);
+        var y = _list.Top + _shelfH + S(8);
         Ui.DrawText(g, "No devices nearby", Ui.Body, new Rectangle(pad, y, w - 2 * pad, S(20)), Ui.Text);
         TextRenderer.DrawText(g, "Other PCs need LocalSend Drop open, phones need LocalSend, and both need to be on this network.",
             Ui.Caption, new Rectangle(pad, y + S(24), w - 2 * pad, S(36)), Ui.TextSecondary,
@@ -468,6 +477,21 @@ sealed class DropPanel : Form
             new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
     }
 
+    void PaintShelfRow(Graphics g, Rectangle r)
+    {
+        var target = _dragOver == ShelfRow;
+        if (target || _hover == ShelfRow) Ui.FillRound(g, Ui.SubtleHover, r, S(4));
+        if (target) Ui.FillRound(g, Ui.Accent, new RectangleF(r.Left, r.Top + (r.Height - S(16)) / 2f, S(3), S(16)), S(2) / 2f + 0.5f);
+        var icon = new Rectangle(r.Left + S(12), r.Top, S(24), r.Height);
+        Ui.DrawIcon(g, Ui.GlyphShelf, 14f, icon, Ui.Text);
+        var x = icon.Right + S(12);
+        var onShelf = _pending?.Count ?? 0;
+        Ui.DrawText(g, onShelf > 0 ? $"Add to the shelf ({onShelf} there)" : "Keep on the shelf", Ui.Body,
+            new Rectangle(x, r.Top + S(9), r.Right - x - S(12), S(20)), Ui.Text);
+        Ui.DrawText(g, target ? "Release to keep it here" : "Collect files, then send them together", Ui.Caption,
+            new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
+    }
+
     void PaintQrRow(Graphics g, Rectangle r)
     {
         var target = _dragOver == QrRow;
@@ -477,7 +501,7 @@ sealed class DropPanel : Form
         Ui.DrawIcon(g, Ui.GlyphQr, 14f, icon, Ui.Text);
         var x = icon.Right + S(12);
         Ui.DrawText(g, "Phone without the app", Ui.Body, new Rectangle(x, r.Top + S(9), r.Right - x - S(12), S(20)), Ui.Text);
-        Ui.DrawText(g, target ? "Release to show a QR code" : "Show a QR code to download in a browser", Ui.Caption,
+        Ui.DrawText(g, target ? "Release to show a QR code" : "Send or receive with a QR code", Ui.Caption,
             new Rectangle(x, r.Top + S(29), r.Right - x - S(12), S(18)), target ? Ui.AccentText : Ui.TextSecondary);
     }
 
@@ -609,6 +633,7 @@ sealed class DropPanel : Form
         var menu = Ui.Menu();
         menu.Items.Add("Message…", null, (_, _) => BeginInvoke(() => OpenNotes?.Invoke(d)));
         menu.Items.Add("Ask for a file…", null, (_, _) => BeginInvoke(() => AskForFile?.Invoke(d)));
+        menu.Items.Add("Send a link…", null, (_, _) => BeginInvoke(() => SendLink(d)));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Rename…", null, (_, _) => BeginInvoke(() => Rename(d)));
         if (s.Nicknames.ContainsKey(d.Fingerprint))
@@ -623,6 +648,34 @@ sealed class DropPanel : Form
         _modal = true;
         menu.Closed += (_, _) => _modal = false;
         menu.Show(this, at);
+    }
+
+    void SendLink(Device d)
+    {
+        _modal = true;
+        try
+        {
+            var copied = "";
+            try { if (Clipboard.ContainsText() && IncomingCard.IsLink(Clipboard.GetText(), out var u)) copied = u.AbsoluteUri; } catch { }
+            var link = PromptForm.Ask($"Send a link to {NameOf(d)}", "It opens in their browser when they accept", "Send", copied);
+            if (link == null) return;
+            if (!IncomingCard.IsLink(link, out var uri)) { _notify("That isn't a web address (it should start with https://)", true); return; }
+            StartSend(d, [new SendItem("message.txt", null, uri.AbsoluteUri)], []);
+        }
+        finally { _modal = false; }
+    }
+
+    /// <summary>Taskbar "Send to …": pick files for that device.</summary>
+    public void PickAndSend(string fingerprint)
+    {
+        if (Find(fingerprint) is not { } d) { _notify("That device isn't nearby right now", true); return; }
+        _modal = true;
+        try
+        {
+            using var dlg = new OpenFileDialog { Multiselect = true, Title = $"Send to {NameOf(d)}" };
+            if (dlg.ShowDialog() == DialogResult.OK) StartSend(d, Sender.FromPaths(dlg.FileNames), dlg.FileNames.ToList());
+        }
+        finally { _modal = false; }
     }
 
     void Rename(Device d)
@@ -667,7 +720,10 @@ sealed class DropPanel : Form
     protected override void OnDragEnter(DragEventArgs e)
     {
         base.OnDragEnter(e);
+        _dragging = true;
+        _dragHasFiles = e.Data?.GetDataPresent(DataFormats.FileDrop) == true;
         Expand(false);
+        Measure();
         Summarize(e);
         OnDragOver(e);
     }
@@ -683,6 +739,7 @@ sealed class DropPanel : Form
     protected override void OnDragLeave(EventArgs e)
     {
         base.OnDragLeave(e);
+        EndDrag();
         _dragOver = -1;
         Invalidate();
     }
@@ -693,6 +750,14 @@ sealed class DropPanel : Form
         var i = _dragOver;
         _dragOver = -1;
         _dragTitle = _dragSub = null;
+        if (i == ShelfRow && e.Data!.GetData(DataFormats.FileDrop) is string[] kept)
+        {
+            _pending = (_pending ?? []).Concat(kept).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            _pendingText = null;
+            EndDrag();
+            return;
+        }
+        EndDrag();
         Invalidate();
         if (i == QrRow)
         {
@@ -716,6 +781,16 @@ sealed class DropPanel : Form
         else return;
         // Let Explorer finish its side of the drop before we do network work.
         BeginInvoke(() => { foreach (var d in targets) StartSend(d, items, sources); });
+    }
+
+    /// <summary>Drag over: drop the shelf row, and show the shelf again if there is one.</summary>
+    void EndDrag()
+    {
+        _dragging = false;
+        if (_pending != null) SummarizePaths(_pending.ToArray());
+        else if (_pendingText == null) _dragTitle = _dragSub = null;
+        if (_expanded) Measure();
+        Invalidate();
     }
 
     /// <summary>Header shows what's in hand: "report.pdf" / "2.1 MB".</summary>
@@ -768,13 +843,21 @@ sealed class DropPanel : Form
             Collapse();
             return;
         }
-        _modal = true;
-        try
+        var menu = Ui.Menu();
+        menu.Items.Add("Send files to a phone…", null, (_, _) => BeginInvoke(() =>
         {
-            using var dlg = new OpenFileDialog { Multiselect = true, Title = "Share with a QR code" };
-            if (dlg.ShowDialog(this) == DialogResult.OK) { ShareByQr?.Invoke(Sender.FromPaths(dlg.FileNames), null); Collapse(); }
-        }
-        finally { _modal = false; }
+            _modal = true;
+            try
+            {
+                using var dlg = new OpenFileDialog { Multiselect = true, Title = "Share with a QR code" };
+                if (dlg.ShowDialog(this) == DialogResult.OK) { ShareByQr?.Invoke(Sender.FromPaths(dlg.FileNames), null); Collapse(); }
+            }
+            finally { _modal = false; }
+        }));
+        menu.Items.Add("Get files from a phone", null, (_, _) => BeginInvoke(() => { ReceiveByQr?.Invoke(); Collapse(); }));
+        _modal = true;
+        menu.Closed += (_, _) => _modal = false;
+        menu.Show(this, new Point(_qr.Left + S(48), _qr.Bottom - S(8)));
     }
 
     void OnEveryoneClick()

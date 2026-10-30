@@ -15,6 +15,7 @@ static class Program
         if (args.Contains("--list")) return ListDevices();
         if (args.Length == 2 && args[0] == "--snapshot") return Snapshot.Run(args[1]);
         if (args.Length >= 2 && args[0] == "--qr-serve") return Snapshot.QrServe(args[1..]);
+        if (args.Length == 1 && args[0] == "--qr-inbox") return Snapshot.QrInbox();
         if (args.Length == 3 && args[0] == "--send") return SendCli(args[1], args[2]);
 
         // Explorer's "Send with LocalSend Drop" passes: --share "<path>"
@@ -27,6 +28,13 @@ static class Program
             else shareText = shared.Text;
         }
         var updated = args.Contains("--updated");
+        // Taskbar list: --send-to <fingerprint>
+        var sendTo = args.Length == 2 && args[0] == "--send-to" ? args[1] : null;
+        if (sendTo != null && Mutex.TryOpenExisting(@"Local\LocalSendDrop", out var runningCopy))
+        {
+            runningCopy.Dispose();
+            if (Shell.SendToDeviceRunning(sendTo)) return 0;
+        }
         if ((share != null || shareText != null) && Mutex.TryOpenExisting(@"Local\LocalSendDrop", out var running))
         {
             running.Dispose();
@@ -154,7 +162,10 @@ static class Program
         // The package brings its own right-click entry; a plain .exe uses the classic one.
         if (Packaging.IsPackaged) Shell.Unregister(); else if (!devBuild) Shell.Register();
         Shell.Listen(paths => panel.BeginInvoke(() => panel.ShowShare(paths)),
-                     text => panel.BeginInvoke(() => panel.ShowShareText(text)));
+                     text => panel.BeginInvoke(() => panel.ShowShareText(text)),
+                     fingerprint => panel.BeginInvoke(() => panel.PickAndSend(fingerprint)));
+        History.Changed += JumpListMenu.Update;
+        JumpListMenu.Update();
 
         // A plain .exe moves itself into the installed package, then hands over.
         async Task<bool> InstallPackage(bool mayPrompt)
@@ -221,6 +232,17 @@ static class Program
         {
             if (items.Count == 0 && string.IsNullOrEmpty(text)) return;
             var form = new QrForm(QrShare.Start(id.Alias, items, text));
+            form.FormClosed += (_, _) => form.Dispose();
+            form.Show();
+        };
+        panel.ReceiveByQr = () =>
+        {
+            var share = QrShare.Start(id.Alias, [], null, upload: true);
+            share.FileReceived += path => History.Add(new HistoryEntry
+            {
+                Time = DateTime.UtcNow, Received = true, Peer = "a phone", Paths = [path], Title = Path.GetFileName(path), Ok = true,
+            });
+            var form = new QrForm(share);
             form.FormClosed += (_, _) => form.Dispose();
             form.Show();
         };
@@ -373,6 +395,8 @@ static class Program
         };
         if (share != null) panel.BeginInvoke(() => panel.ShowShare(share));
         else if (shareText != null) panel.BeginInvoke(() => panel.ShowShareText(shareText));
+        // Started from the taskbar list: give discovery a moment to find the device.
+        if (sendTo != null) _ = Task.Delay(4000).ContinueWith(_ => panel.BeginInvoke(() => panel.PickAndSend(sendTo)));
         Application.Run();
         tray.Visible = false;
         discovery.Dispose();

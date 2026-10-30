@@ -299,10 +299,24 @@ sealed class IncomingCard : Form
         HideAfter(8000);
     }
 
+    /// <summary>A message that's only a web address.</summary>
+    public static bool IsLink(string text, out Uri uri) =>
+        Uri.TryCreate(text.Trim(), UriKind.Absolute, out uri!) && uri.Scheme is "http" or "https" && !text.Trim().Contains(' ');
+
     public void OnMessage(string alias, string fingerprint, string text)
     {
         _session = null;
         Reset();
+        if (IsLink(text, out var link))
+        {
+            _title = $"{alias} sent you a link";
+            _lines = [link.Host + (link.PathAndQuery.Length > 1 ? link.PathAndQuery : "")];
+            Arrange("Open", "Copy");
+            _onPrimary = () => { Hide(); Process.Start(new ProcessStartInfo(link.AbsoluteUri) { UseShellExecute = true }); };
+            _onSecondary = () => { Clipboard.SetText(link.AbsoluteUri); Hide(); };
+            if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
+            return;
+        }
         _title = $"Message from {alias}";
         _lines = text.Replace("\r", "").Split('\n').Take(6).ToList();
         Arrange("Reply", "Copy");

@@ -129,6 +129,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         app.MapPost("/api/localsend/v2/upload", (Func<HttpContext, Task<IResult>>)(ctx => Upload(ctx)));
         app.MapPost("/api/localsend/v2/cancel", (Func<HttpContext, IResult>)(ctx => Cancel(ctx)));
         app.MapGet("/s/{token}", (Func<string, IResult>)(token => QrShare.Page(token)));
+        app.MapPost("/u/{token}", (Func<HttpContext, string, Task<IResult>>)((ctx, token) => QrShare.Receive(ctx, token, SaveAsync)));
         app.MapGet("/s/{token}/f/{index:int}", (Func<string, int, IResult>)((token, index) => QrShare.File(token, index)));
         app.MapGet("/s/{token}/all.zip", (Func<HttpContext, string, Task>)((ctx, token) => QrShare.All(ctx, token)));
         app.MapGet("/api/localsend-drop/v1/resume", (Func<HttpContext, IResult>)(ctx => ResumeOffset(ctx)));
@@ -357,6 +358,27 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
             Ended?.Invoke(s.Request, s.Saved, null);
         }
         return Results.Ok();
+    }
+
+    /// <summary>Saves a file uploaded from a phone's browser (QR inbox) into the save folder.</summary>
+    async Task<string> SaveAsync(string name, Stream body, CancellationToken ct)
+    {
+        string target;
+        lock (_lock) target = SafeTarget(name);
+        var part = target + ".part";
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        try
+        {
+            await using (var fs = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, true))
+                await body.CopyToAsync(fs, ct);
+            File.Move(part, target);
+            return target;
+        }
+        catch
+        {
+            try { File.Delete(part); } catch { }
+            throw;
+        }
     }
 
     /// <summary>LocalSend Drop extension: how much of a file already arrived, to resume from.</summary>

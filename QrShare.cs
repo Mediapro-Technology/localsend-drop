@@ -22,6 +22,11 @@ static class QrShare
         public required string From { get; init; }
         public required List<SendItem> Items { get; init; }
         public string? Text { get; init; }
+        /// <summary>An inbox: the phone sends files to this PC instead.</summary>
+        public bool Upload { get; init; }
+        public readonly List<string> Received = [];
+        public event Action<string>? FileReceived;
+        public void OnReceived(string path) { lock (Received) Received.Add(path); FileReceived?.Invoke(path); }
         public DateTime Expires { get; init; } = DateTime.UtcNow.AddHours(1);
         public int Downloads;
         public event Action? Downloaded;
@@ -33,12 +38,12 @@ static class QrShare
     /// <summary>Port of the plain-HTTP listener (set by Server).</summary>
     public static int Port { get; set; }
 
-    public static Share Start(string from, List<SendItem> items, string? text)
+    public static Share Start(string from, List<SendItem> items, string? text, bool upload = false)
     {
         var share = new Share
         {
             Token = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant(),
-            From = from, Items = items, Text = text,
+            From = from, Items = items, Text = text, Upload = upload,
         };
         lock (Shares) Shares[share.Token] = share;
         return share;
@@ -79,6 +84,7 @@ static class QrShare
     public static IResult Page(string token)
     {
         if (Find(token) is not { } s) return Results.Content(Html("Link expired", "<p class=muted>Ask them to share it again.</p>"), "text/html; charset=utf-8");
+        if (s.Upload) return Results.Content(Html($"Send to {s.From}", UploadBody(s.Token)), "text/html; charset=utf-8");
         var body = new System.Text.StringBuilder();
         if (s.Text != null)
         {
@@ -121,6 +127,42 @@ static class QrShare
             await src.CopyToAsync(dst, ctx.RequestAborted);
         }
     }
+
+    /// <summary>Saves one file a phone uploads to an inbox share (POST /u/{token}?name=…).</summary>
+    public static async Task<IResult> Receive(HttpContext ctx, string token, Func<string, Stream, CancellationToken, Task<string>> save)
+    {
+        if (Find(token) is not { Upload: true } s) return Results.NotFound();
+        var name = ctx.Request.Query["name"].ToString();
+        if (string.IsNullOrWhiteSpace(name)) name = "file";
+        var path = await save(Path.GetFileName(name), ctx.Request.Body, ctx.RequestAborted);
+        s.OnReceived(path);
+        return Results.Ok();
+    }
+
+    static string UploadBody(string token) => $$$"""
+        <label class=all for=f>Choose photos or files</label>
+        <input id=f type=file multiple hidden>
+        <div id=list></div>
+        <script>
+        const list = document.getElementById('list');
+        document.getElementById('f').addEventListener('change', async e => {
+          for (const file of e.target.files) {
+            const row = document.createElement('div'); row.className = 'file';
+            row.innerHTML = '<span class=name></span><span class=muted>0%</span>';
+            row.firstChild.textContent = file.name; list.appendChild(row);
+            await new Promise(done => {
+              const x = new XMLHttpRequest();
+              x.open('POST', '/u/{{{token}}}?name=' + encodeURIComponent(file.name));
+              x.upload.onprogress = p => { if (p.lengthComputable) row.lastChild.textContent = Math.round(p.loaded * 100 / p.total) + '%'; };
+              x.onload = () => { row.lastChild.textContent = x.status == 200 ? 'Sent' : 'Failed'; done(); };
+              x.onerror = () => { row.lastChild.textContent = 'Failed'; done(); };
+              x.send(file);
+            });
+          }
+          e.target.value = '';
+        });
+        </script>
+        """;
 
     static string Html(string title, string body) => $$$"""
         <!doctype html><html lang=en><head><meta charset=utf-8>

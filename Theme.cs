@@ -208,6 +208,7 @@ static class Ui
     public const string GlyphDown = "", GlyphUp = "", GlyphCheck = "", GlyphMessage = "";
     public const string GlyphFolder = "", GlyphSend = "";
     public const string GlyphQuiet = "", GlyphPeople = "", GlyphPin = "", GlyphQr = "";
+    public const string GlyphShelf = "", GlyphLink = "";
 
     /// <summary>A right-click menu drawn like Windows 11's (rounded, themed).</summary>
     public static ContextMenuStrip Menu()
