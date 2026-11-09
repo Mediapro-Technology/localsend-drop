@@ -27,6 +27,15 @@ sealed class Kvm : IDisposable
     bool _wantHelper;
     readonly CaptureWindow _capture;
     readonly System.Threading.Timer _beat;
+    // Dragging files across:
+    readonly DropStrip _strip;
+    readonly System.Windows.Forms.Timer _dragWatch;
+    volatile DropStrip.Held? _carry;          // a file drag caught at the edge, crossing with it now
+    volatile Edge _carryEdge;
+    string? _outgoing;                        // our files, being dragged on the other PC
+    (List<string> paths, Bitmap? image, Point offset)? _cameBack;   // that drag came back: carry on here
+    volatile KvmDrag.Staging? _incoming;      // their files, being dragged here
+    volatile bool _upHeld;
     // Changed on the UI thread, read on the hook thread.
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, KvmLink> _links = new(StringComparer.OrdinalIgnoreCase);
 
@@ -46,6 +55,10 @@ sealed class Kvm : IDisposable
         _notify = notify;
         HiddenCursor.RecoverAfterCrash();
         _capture = new CaptureWindow();
+        _strip = new DropStrip();
+        _dragWatch = new System.Windows.Forms.Timer { Interval = 40 };
+        _dragWatch.Tick += (_, _) => DragWatch();
+        _dragWatch.Start();
         _source = Wire(new InputEngine());
         Sync();
         Pairing.Changed += Sync;
@@ -69,6 +82,7 @@ sealed class Kvm : IDisposable
         s.Forward += m => { if (_active is { } l) l.Send(m); else s.Free(); };
         s.Emergency += () => Release(BackPoint(), null, "Ctrl+Alt+Home");
         s.Stray += OnStray;
+        s.LeftUpHeld += OnLeftUpHeld;
         return s;
     }
 
@@ -181,6 +195,16 @@ sealed class Kvm : IDisposable
         Volatile.Write(ref _lastHeard, Environment.TickCount64);
         _active = link;
         KvmLog.Write($"crossed to {link.Name} over {edge} at {p}{(source is HelperClient ? " (admin helper)" : "")}");
+        if (_carry is { } carry && _carryEdge == edge)
+        {
+            // Carrying a file drag over: they start their own drag of it; ours is cancelled with Esc
+            // (the button stays held, and now drives the drag there).
+            _carry = null;
+            link.Send(KvmDrag.Offer(carry.Paths, link.Fingerprint, carry.Image, carry.Offset, out var token));
+            _outgoing = token;
+            _pointer.Writer.TryWrite(() => { Inject.Key(0x1B, 0x01, false, false); Inject.Key(0x1B, 0x01, true, false); });
+            _ui(() => _strip.Away());
+        }
         // Park the hidden pointer mid-screen so moves in every direction register.
         var park = Screen.FromPoint(p).Bounds;
         var centre = new Point(park.Left + park.Width / 2, park.Top + park.Height / 2);
@@ -223,6 +247,24 @@ sealed class Kvm : IDisposable
         {
             case KvmMsg.Leave when _active == link:
                 Release(KvmWire.OnEdge(link.Edge, KvmWire.ReadFraction(m), Inject.Desktop, ReturnInset), null, "came back over the edge");
+                if (_cameBack is { } back)
+                {
+                    // Our files' drag came back over the edge, button still held: it carries on here.
+                    _cameBack = null;
+                    _ui(() => KvmDrag.RunDrag(back.paths, back.image, back.offset, PressHere, _ => { }));
+                }
+                _outgoing = null;
+                break;
+            case KvmMsg.DragWant:
+                KvmDrag.OnWant(KvmDrag.ReadToken(m), link.Fingerprint);
+                break;
+            case KvmMsg.DragCancel:
+                var cancelled = KvmDrag.ReadToken(m);
+                if (cancelled == _outgoing) _cameBack = KvmDrag.Mine(cancelled);
+                KvmDrag.OnCancel(cancelled);
+                break;
+            case KvmMsg.DragMeta when KvmDrag.ReadMeta(m) is { } carried:
+                _ui(() => StartIncoming(link, carried.meta, carried.image));
                 break;
             case KvmMsg.Locked when _active == link:
                 Release(BackPoint(), $"{link.Name} is locked. Unlock it with its own keyboard.", "they're locked");
@@ -243,6 +285,80 @@ sealed class Kvm : IDisposable
         link.Send(KvmWire.Simple(KvmMsg.Beat));
         if (Environment.TickCount64 - Volatile.Read(ref _lastHeard) > TimeoutMs)
             Release(BackPoint(), $"{link.Name} stopped answering. Control is back on this PC.", "timed out");
+    }
+
+    // ---- dragging files across ----
+
+    static bool LeftHeld() => (GetAsyncKeyState(0x01) & 0x8000) != 0;
+
+    /// <summary>UI thread, every 40 ms: a file drag resting on a shared edge crosses over with its files.</summary>
+    void DragWatch()
+    {
+        if (_active != null || _incoming != null || !LeftHeld()) { _strip.Away(); return; }
+        var p = Cursor.Position;
+        var desk = Inject.Desktop;
+        foreach (var pc in Pairing.All)
+        {
+            if (!_links.TryGetValue(pc.Fingerprint, out var l) || !l.IsConnected) continue;
+            if (!KvmWire.AtEdge(pc.Edge, p, desk) || KvmWire.NearCorner(pc.Edge, p, desk)) continue;
+            _strip.ShowOn(pc.Edge, desk);
+            if (_strip.Holding is { } held && _strip.HeldFor >= 150)
+            {
+                _carryEdge = pc.Edge;
+                _carry = held;
+                _source.Cross(pc.Edge, p);
+            }
+            return;
+        }
+        _strip.Away();
+    }
+
+    /// <summary>
+    /// While crossed over, the button press went to the other PC, so Windows here thinks it's up.
+    /// Press it again here (on the invisible window the drag starts from); letting go by hand ends it.
+    /// </summary>
+    static void PressHere() => Inject.Button(MouseKind.LeftDown);
+
+    /// <summary>UI thread. Their files came over the edge with the pointer, button held: drag them here.</summary>
+    void StartIncoming(KvmLink link, KvmDrag.Meta meta, Bitmap? image)
+    {
+        var st = KvmDrag.Stage(meta, link.Fingerprint);
+        link.Send(KvmDrag.TokenMessage(KvmMsg.DragWant, meta.Token));
+        _incoming = st;
+        // Letting go before they've arrived waits for them; once they're here it goes straight through.
+        _source.HoldLeftUp(true);
+        _ = st.Done.Task.ContinueWith(_ => { if (_incoming == st && !_upHeld) _source.HoldLeftUp(false); }, TaskScheduler.Default);
+        KvmDrag.RunDrag(st.Top, image, new Point(meta.OffsetX, meta.OffsetY), PressHere, dropped =>
+        {
+            if (_incoming == st) _incoming = null;
+            _source.HoldLeftUp(false);
+            if (!dropped)
+            {
+                link.Send(KvmDrag.TokenMessage(KvmMsg.DragCancel, st.Token));
+                KvmDrag.Discard(st.Token);
+            }
+        });
+    }
+
+    /// <summary>The button was let go over a drop while their files are still coming: play it once they're here.</summary>
+    void OnLeftUpHeld()
+    {
+        if (_incoming is not { } st) { Inject.Button(MouseKind.LeftUp); return; }
+        _upHeld = true;
+        _ = Task.Run(async () =>
+        {
+            string? error;
+            try { error = await st.Done.Task.WaitAsync(TimeSpan.FromMinutes(30)); }
+            catch (TimeoutException) { error = "it took too long"; }
+            if (error != null)
+            {
+                Inject.Key(0x1B, 0x01, false, false);   // cancel the drop
+                Inject.Key(0x1B, 0x01, true, false);
+                _ui(() => _notify($"Couldn't bring the files over: {error}", true));
+            }
+            _upHeld = false;
+            Inject.Button(MouseKind.LeftUp);
+        });
     }
 
     Point BackPoint()
@@ -289,6 +405,7 @@ sealed class Kvm : IDisposable
 
     [DllImport("user32.dll")] static extern nint WindowFromPoint(Native.POINT p);
     [DllImport("user32.dll")] static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
     [DllImport("kernel32.dll")] static extern nint OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("advapi32.dll")] static extern bool OpenProcessToken(nint process, uint access, out nint token);
@@ -302,6 +419,8 @@ sealed class Kvm : IDisposable
         TakeBack();
         _pointer.Writer.TryComplete();
         _capture.Dispose();
+        _dragWatch.Dispose();
+        _strip.Dispose();
         _wantHelper = false;
         Inject.Via = null;
         _source.Dispose();

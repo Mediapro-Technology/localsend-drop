@@ -23,6 +23,7 @@ static class Program
         if (args.Length == 1 && args[0] == "--kvm-loopback") return KvmTest.Loopback();
         if (args.Length == 1 && args[0] == "--input-helper") return AdminHelper.RunHelper();
         if (args.Length == 1 && args[0] == "--kvm-helpertest") return HelperTest.Run();
+        if (args.Length == 1 && args[0] == "--kvm-dragtest") return DragTest.Run();
 
         // Explorer's "Send with LocalSend Drop" passes: --share "<path>"
         var share = args.Length >= 2 && args[0] == "--share" ? args.Skip(1).ToList() : null;
@@ -115,6 +116,8 @@ static class Program
         server.AskAccept = async (r, ct) =>
         {
             var s = Settings.Current;
+            // Files for a drag you're doing yourself, from a paired PC: no question, no card.
+            if (r.KvmDrop != null) return true;
             // We asked them for this file: take it without asking again.
             if (FileRequests.Consume(r.SenderFingerprint))
             {
@@ -308,6 +311,8 @@ static class Program
         card.WatchScreen = offer => new ScreenViewer(offer, id).Show();
 
         // ---- one mouse and keyboard for paired PCs ----
+        KvmDrag.Init(id, discovery, a => panel.BeginInvoke(a));
+        server.Ended += (r, saved, error) => { if (r.KvmDrop is { } token) KvmDrag.Arrived(token, error); };
         Pairing.Ui = a => panel.BeginInvoke(a);
         KvmRemote.Ui = a => panel.BeginInvoke(a);
         Pairing.AskAccept = card.OnPairRequest;

@@ -24,6 +24,9 @@ sealed class DeviceInfo
     /// <summary>LocalSend Drop: the sender's little mouth colour ("#rrggbb"), so it can visit the receiver's screen.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Creature { get; set; }
+    /// <summary>LocalSend Drop: these files are for a drag to a paired PC (its token); they go to its staging folder.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? KvmDrop { get; set; }
 }
 
 sealed class Device
@@ -204,7 +207,7 @@ static class Sender
     /// <param name="progress">Status text and 0..1 progress (null while waiting).</param>
     /// <returns>Short result text for the UI.</returns>
     public static async Task<string> SendAsync(Identity id, int ourPort, Device target, List<SendItem> items,
-        Func<string?> askPin, IProgress<(string, double?)> progress, CancellationToken ct)
+        Func<string?> askPin, IProgress<(string, double?)> progress, CancellationToken ct, string? kvmDrop = null)
     {
         if (items.Count == 0) throw new SendFailed("Nothing to send");
 
@@ -243,6 +246,7 @@ static class Sender
                 Alias = id.Alias, DeviceModel = "Windows", DeviceType = "desktop",
                 Fingerprint = id.Fingerprint, Port = ourPort, Protocol = "https",
                 Creature = Settings.Current.ZoneStyle == "Mouth" ? ColorTranslator.ToHtml(Ui.Solid(Ui.Accent)) : null,
+                KvmDrop = kvmDrop,
             },
             files,
         };

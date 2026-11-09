@@ -14,12 +14,24 @@ static class KvmRemote
     const int TimeoutMs = 1000;
     const int GraceMs = 300;     // just arrived: a wobble back doesn't count
     const int LeavePush = 40;    // px pushed against the facing edge before going back
+    const int DragPush = 240;    // carrying a file drag: more, so the strip has caught it first
 
     /// <summary>Runs work on the UI thread (clipboard).</summary>
     public static Action<Action> Ui = a => a();
 
     static Session? _active;
     static readonly object Lock = new();
+    static DropStrip? _strip;   // UI thread
+
+    static DropStrip.Held? StripHolding() => _strip?.Holding;
+    static void StripShow(Edge e, Rectangle desk) => Ui(() => { _strip ??= new DropStrip(); _strip.ShowOn(e, desk); });
+    static void StripAway() => Ui(() => _strip?.Away());
+
+    static void Escape()
+    {
+        Inject.Key(0x1B, 0x01, false, false);
+        Inject.Key(0x1B, 0x01, true, false);
+    }
 
     /// <summary>A paired PC started (true) or stopped (false) using this PC's input. The admin helper only plays input in between.</summary>
     public static Action<bool>? ActiveChanged;
@@ -40,6 +52,9 @@ static class KvmRemote
         Point _pos;
         long _enteredAt;
         int _push;
+        KvmDrag.Staging? _incoming;   // their files, being dragged here
+        bool _dropWaiting;            // let go over a drop; played once the files are here
+        bool _stripShown;
         long _lastHeard;
         readonly HashSet<(ushort vk, ushort scan, bool ext)> _keys = [];
         readonly HashSet<(MouseKind down, int data)> _buttons = [];
@@ -75,6 +90,9 @@ static class KvmRemote
                         Key(BitConverter.ToUInt16(m, 1), BitConverter.ToUInt16(m, 3), (m[5] & 1) != 0, (m[5] & 2) != 0);
                         break;
                     case KvmMsg.Release: Off(); break;
+                    case KvmMsg.DragMeta when _on && KvmDrag.ReadMeta(m) is { } carried: StartIncoming(carried.meta, carried.image); break;
+                    case KvmMsg.DragWant: KvmDrag.OnWant(KvmDrag.ReadToken(m), fingerprint); break;
+                    case KvmMsg.DragCancel: KvmDrag.OnCancel(KvmDrag.ReadToken(m)); break;
                     case KvmMsg.ClipText or KvmMsg.ClipImage: Ui(() => Clip.FromSync(m)); break;
                 }
             }
@@ -101,14 +119,42 @@ static class KvmRemote
         {
             var desk = Inject.Desktop;
             var next = new Point(_pos.X + dx, _pos.Y + dy);
+            var leftHeld = _buttons.Contains((MouseKind.LeftDown, 0));
             if (KvmWire.Past(Facing, next, desk))
             {
                 // Push against the edge to go back, like crossing over: a wobble isn't enough.
                 if (Environment.TickCount64 - _enteredAt > GraceMs) _push += Overshoot(Facing, next, desk);
-                if (_push >= LeavePush)
+                var holding = leftHeld && _incoming == null ? StripHolding() : null;
+                var needed = leftHeld && _incoming == null && holding == null ? DragPush : LeavePush;
+                if (_push >= needed)
                 {
+                    var fraction = KvmWire.Along(Facing, _pos, desk);
+                    if (_incoming is { } back)
+                    {
+                        // Their files' drag going back: it carries on there.
+                        KvmLog.Write($"{Name}'s drag went back over the edge");
+                        pipe.Send(KvmDrag.TokenMessage(KvmMsg.DragCancel, back.Token));
+                        _incoming = null;
+                        Escape();
+                        KvmDrag.Discard(back.Token);
+                        pipe.Send(KvmWire.Fraction(KvmMsg.Leave, fraction));
+                        Off();
+                        return;
+                    }
+                    if (holding != null)
+                    {
+                        // A file drag from here: carry it over, and cancel it here (Esc).
+                        KvmLog.Write($"carrying a drag back to {Name}");
+                        pipe.Send(KvmWire.Fraction(KvmMsg.Leave, fraction));
+                        pipe.Send(KvmDrag.Offer(holding.Paths, fingerprint, holding.Image, holding.Offset, out _));
+                        Escape();
+                        StripAway();
+                        _stripShown = false;
+                        Off();
+                        return;
+                    }
                     KvmLog.Write($"{Name} went back over the edge");
-                    pipe.Send(KvmWire.Fraction(KvmMsg.Leave, KvmWire.Along(Facing, _pos, desk)));
+                    pipe.Send(KvmWire.Fraction(KvmMsg.Leave, fraction));
                     Off();
                     Ui(() => { if (Clip.ForSync() is { } clip) pipe.Send(clip); });
                     return;
@@ -124,6 +170,32 @@ static class KvmRemote
             }
             _pos = next;
             Inject.MoveTo(_pos.X, _pos.Y);
+            // A drag (button held) at the edge facing them: put the strip there to catch files.
+            var strip = leftHeld && _incoming == null && KvmWire.AtEdge(Facing, _pos, desk);
+            if (strip != _stripShown)
+            {
+                _stripShown = strip;
+                if (strip) StripShow(Facing, desk); else StripAway();
+            }
+        }
+
+        /// <summary>Their files came over with the pointer: drag them here (the button is pressed for them).</summary>
+        void StartIncoming(KvmDrag.Meta meta, Bitmap? image)
+        {
+            var st = KvmDrag.Stage(meta, fingerprint);
+            pipe.Send(KvmDrag.TokenMessage(KvmMsg.DragWant, meta.Token));
+            _incoming = st;
+            Ui(() => KvmDrag.RunDrag(st.Top, image, new Point(meta.OffsetX, meta.OffsetY),
+                () => { lock (this) _buttons.Add((MouseKind.LeftDown, 0)); Inject.Button(MouseKind.LeftDown); },
+                dropped =>
+                {
+                    lock (this) if (_incoming == st) _incoming = null;
+                    if (!dropped)
+                    {
+                        pipe.Send(KvmDrag.TokenMessage(KvmMsg.DragCancel, st.Token));
+                        KvmDrag.Discard(st.Token);
+                    }
+                }));
         }
 
         static int Overshoot(Edge e, Point p, Rectangle d) => e switch
@@ -136,6 +208,26 @@ static class KvmRemote
 
         void Button(MouseKind kind, int data)
         {
+            if (kind == MouseKind.LeftUp && _incoming is { } st)
+            {
+                // Let go over a drop: play it once their files are here, so nothing lands half-copied.
+                _buttons.Remove((MouseKind.LeftDown, 0));
+                _dropWaiting = true;
+                _ = Task.Run(async () =>
+                {
+                    string? error;
+                    try { error = await st.Done.Task.WaitAsync(TimeSpan.FromMinutes(30)); }
+                    catch (TimeoutException) { error = "it took too long"; }
+                    lock (this)
+                    {
+                        if (!_dropWaiting) return;
+                        _dropWaiting = false;
+                        if (error != null) { KvmLog.Write($"drag: dropping cancelled ({error})"); Escape(); }
+                        Inject.Button(MouseKind.LeftUp);
+                    }
+                });
+                return;
+            }
             // Only X buttons and wheels carry data.
             var d = kind is MouseKind.XDown or MouseKind.XUp or MouseKind.Wheel or MouseKind.HWheel ? data : 0;
             switch (kind)
@@ -158,6 +250,16 @@ static class KvmRemote
         /// <summary>Lets go of everything still held and stops taking input. Caller holds the lock.</summary>
         public void Off()
         {
+            if (_incoming is { } st)
+            {
+                // Stopped mid-drag: cancel it here rather than drop half-copied files.
+                Escape();
+                if (_dropWaiting) { Inject.Button(MouseKind.LeftUp); _dropWaiting = false; }
+                pipe.Send(KvmDrag.TokenMessage(KvmMsg.DragCancel, st.Token));
+                KvmDrag.Discard(st.Token);
+                _incoming = null;
+            }
+            if (_stripShown) { _stripShown = false; StripAway(); }
             foreach (var (vk, scan, ext) in _keys) Inject.Key(vk, scan, true, ext);
             _keys.Clear();
             foreach (var (down, data) in _buttons)

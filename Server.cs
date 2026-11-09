@@ -23,6 +23,9 @@ sealed class IncomingRequest
     /// <summary>The sender's little mouth colour, if they use one.</summary>
     public Color? SenderCreature { get; init; }
     public long TotalSize => Files.Sum(f => f.Size);
+    /// <summary>Files for a drag from a paired PC (its token): saved to <see cref="SaveRoot"/>, replacing the placeholders.</summary>
+    public string? KvmDrop { get; init; }
+    public string? SaveRoot { get; init; }
 }
 
 /// <summary>
@@ -240,6 +243,13 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
                 f.TryGetProperty("thumbnail", out var th) && th.ValueKind == JsonValueKind.String ? th.GetString() : null));
         }
         if (files.Count == 0) return Results.BadRequest();
+        // Files for a drag from a paired PC: only the PC we're expecting them from, proven by its certificate.
+        string? kvmDrop = null, saveRoot = null;
+        if (info.ValueKind == JsonValueKind.Object && info.TryGetProperty("kvmDrop", out var kd) && kd.GetString() is { Length: > 0 } dropToken)
+        {
+            if (ctx.Connection.ClientCertificate == null || KvmDrag.StagingFor(dropToken, fingerprint) is not { } root) return Results.StatusCode(403);
+            (kvmDrop, saveRoot) = (dropToken, root);
+        }
 
         // A text message: show it, nothing to upload.
         if (files.Count == 1 && files[0].Preview != null && (files[0].FileType ?? "").StartsWith("text/"))
@@ -255,6 +265,8 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
             SenderIp = RemoteIp(ctx),
             SenderFingerprint = fingerprint,
             Files = files,
+            KvmDrop = kvmDrop,
+            SaveRoot = saveRoot,
             SenderCreature = info.ValueKind == JsonValueKind.Object && info.TryGetProperty("creature", out var cr)
                 && cr.ValueKind == JsonValueKind.String && cr.GetString() is { Length: 7 } hex && hex[0] == '#'
                 ? ParseColor(hex) : null,
@@ -312,7 +324,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
             file = entry.File;
             if (!s.Partials.TryGetValue(fileId!, out partial!))
             {
-                var target = SafeTarget(file.FileName);
+                var target = SafeTarget(file.FileName, s.Request.SaveRoot);
                 s.Partials[fileId!] = partial = new Partial { Target = target, Part = target + ".part" };
             }
             attempt = ++partial.Attempt;
@@ -362,7 +374,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
                 }
             }
             if (partial.Written < file.Size) throw new IOException("The connection closed before the file was complete");
-            File.Move(partial.Part, partial.Target);
+            File.Move(partial.Part, partial.Target, overwrite: s.Request.KvmDrop != null);   // a drag's placeholder
         }
         catch (Exception ex)
         {
@@ -482,20 +494,29 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
     /// Maps a sender-supplied name like "Photos/2024/a.jpg" into SaveDir: invalid
     /// characters and ".." are stripped, and existing files are never overwritten.
     /// </summary>
-    string SafeTarget(string name)
+    /// <summary>One file or folder name, made safe: invalid characters replaced, trailing dots and spaces gone.</summary>
+    public static string CleanPart(string p)
     {
         var invalid = Path.GetInvalidFileNameChars();
+        var clean = new string(p.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim().TrimEnd('.');
+        return clean.Length > 0 && clean != "." && clean != ".." ? clean : "file";
+    }
+
+    /// <param name="into">A drag's staging folder: names are kept exactly, replacing its placeholders.</param>
+    string SafeTarget(string name, string? into = null)
+    {
         var parts = name.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries)
-            .Select(p => new string(p.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim().TrimEnd('.'))
-            .Where(p => p.Length > 0 && p != "." && p != "..")
+            .Where(p => p.Trim().TrimEnd('.').Length > 0 && p != "." && p != "..")
+            .Select(CleanPart)
             .ToList();
         if (parts.Count == 0) parts.Add("file");
 
-        var root = Path.GetFullPath(SaveDir);
+        var root = Path.GetFullPath(into ?? SaveDir);
         var path = Path.GetFullPath(Path.Combine([root, .. parts]));
         if (!path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             path = Path.Combine(root, parts[^1]);
 
+        if (into != null) return path;
         var dir = Path.GetDirectoryName(path)!;
         var stem = Path.GetFileNameWithoutExtension(path);
         var ext = Path.GetExtension(path);

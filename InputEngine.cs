@@ -23,6 +23,12 @@ interface IInputSource : IDisposable
     void SetEdges(int mask);
     /// <summary>Stop holding input back: control is on this PC.</summary>
     void Free();
+    /// <summary>Cross over now (a file drag reached the edge: the button is held, so resting doesn't count).</summary>
+    void Cross(Edge edge, Point p);
+    /// <summary>Keep the next left-button release from this PC and raise <see cref="LeftUpHeld"/> instead.</summary>
+    void HoldLeftUp(bool on);
+    /// <summary>The held release happened; play it later with Inject.Button(LeftUp).</summary>
+    event Action? LeftUpHeld;
 }
 
 /// <summary>
@@ -38,8 +44,10 @@ sealed class InputEngine : IInputSource
     public event Action<byte[]>? Forward;
     public event Action? Emergency;
     public event Action<Point, Point, double>? Stray;
+    public event Action? LeftUpHeld;
 
     InputHook _hook;
+    volatile bool _holdUp;
     readonly System.Threading.Timer _watch;
     volatile bool _captured;
     volatile int _edges;
@@ -73,6 +81,31 @@ sealed class InputEngine : IInputSource
         lock (_remoteDown) _remoteDown.Clear();
     }
 
+    public void Cross(Edge edge, Point p)
+    {
+        if (_captured) return;
+        Capture(edge, p);
+    }
+
+    public void HoldLeftUp(bool on) => _holdUp = on;
+
+    void Capture(Edge edge, Point p)
+    {
+        _restingOn = null;
+        lock (_remoteDown) _remoteDown.Clear();
+        _last = p;
+        _capturedTicks = Stopwatch.GetTimestamp();
+        _strayChecks = 0;
+        _captured = true;
+        Crossed?.Invoke(edge, p);
+    }
+
+    void CountButtons(MouseKind k)
+    {
+        if (k is MouseKind.LeftDown or MouseKind.RightDown or MouseKind.MiddleDown or MouseKind.XDown) _buttonsDown++;
+        else if (k is MouseKind.LeftUp or MouseKind.RightUp or MouseKind.MiddleUp or MouseKind.XUp) _buttonsDown = Math.Max(0, _buttonsDown - 1);
+    }
+
     // ---- hook thread ----
 
     bool OnMouse(MouseEvent e)
@@ -81,6 +114,7 @@ sealed class InputEngine : IInputSource
         {
             var p = new Point(e.X, e.Y);
             if (e.Injected) { if (e.Kind == MouseKind.Move) _last = p; return false; }
+            CountButtons(e.Kind);   // so a button held while crossing (a file drag) is let go of here too
             if (e.Kind == MouseKind.Move)
             {
                 int dx = p.X - _last.X, dy = p.Y - _last.Y;
@@ -91,12 +125,16 @@ sealed class InputEngine : IInputSource
         }
 
         if (e.Injected) return false;
-        switch (e.Kind)
+        if (e.Kind == MouseKind.LeftUp && _holdUp)
         {
-            case MouseKind.LeftDown or MouseKind.RightDown or MouseKind.MiddleDown or MouseKind.XDown: _buttonsDown++; break;
-            case MouseKind.LeftUp or MouseKind.RightUp or MouseKind.MiddleUp or MouseKind.XUp: _buttonsDown = Math.Max(0, _buttonsDown - 1); break;
-            case MouseKind.Move: CheckEdge(new Point(e.X, e.Y)); break;
+            // A drop of files still on their way: it's played once they've arrived.
+            _holdUp = false;
+            CountButtons(e.Kind);
+            LeftUpHeld?.Invoke();
+            return true;
         }
+        CountButtons(e.Kind);
+        if (e.Kind == MouseKind.Move) CheckEdge(new Point(e.X, e.Y));
         return false;
     }
 
@@ -112,22 +150,10 @@ sealed class InputEngine : IInputSource
         var now = Stopwatch.GetTimestamp();
         if (_restingOn != at) { _restingOn = at; _restingSince = now; return; }
         if (Stopwatch.GetElapsedTime(_restingSince, now).TotalMilliseconds < ResistanceMs) return;
-        _restingOn = null;
-        lock (_remoteDown) _remoteDown.Clear();
-        _last = p;
-        _capturedTicks = Stopwatch.GetTimestamp();
-        _strayChecks = 0;
-        _captured = true;
-        Crossed?.Invoke(at.Value, p);
+        Capture(at.Value, p);
     }
 
-    /// <summary>Corners stay here, so Start, close buttons and hot corners keep working.</summary>
-    static bool NearCorner(Edge e, Point p, Rectangle d)
-    {
-        var (pos, start, length) = e is Edge.Left or Edge.Right ? (p.Y, d.Top, d.Height) : (p.X, d.Left, d.Width);
-        var margin = Math.Max(30, length * 3 / 100);
-        return pos - start < margin || start + length - 1 - pos < margin;
-    }
+    static bool NearCorner(Edge e, Point p, Rectangle d) => KvmWire.NearCorner(e, p, d);
 
     bool OnKey(KeyEvent e)
     {

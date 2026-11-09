@@ -22,6 +22,9 @@ enum KvmMsg : byte
     ClipImage = 8,  // PNG
     Locked = 9,     // controlled PC is locked or showing a secure prompt
     Release = 10,   // let go of every held key and button
+    DragMeta = 11,  // carrying files over: i32 json length, json (KvmDrag.Meta), PNG drag image
+    DragWant = 12,  // token: send the files now (the other side is copying while you drag)
+    DragCancel = 13,// token: that drag ended without a drop here
 }
 
 static class KvmWire
@@ -102,6 +105,14 @@ static class KvmWire
         Edge.Top => p.Y <= d.Top,
         _ => p.Y >= d.Bottom - 1,
     };
+
+    /// <summary>Corners stay put, so Start, close buttons and hot corners keep working.</summary>
+    public static bool NearCorner(Edge e, Point p, Rectangle d)
+    {
+        var (pos, start, length) = e is Edge.Left or Edge.Right ? (p.Y, d.Top, d.Height) : (p.X, d.Left, d.Width);
+        var margin = Math.Max(30, length * 3 / 100);
+        return pos - start < margin || start + length - 1 - pos < margin;
+    }
 
     /// <summary>Whether <paramref name="p"/> is past that edge of the desktop (off it).</summary>
     public static bool Past(Edge e, Point p, Rectangle d) => e switch

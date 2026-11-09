@@ -26,9 +26,9 @@ static class AdminHelper
     public const string TaskName = "LocalSend Drop input helper";
 
     // main -> helper
-    const byte SetEdges = 1, Free = 2, MoveTo = 3, Button = 4, Key = 5, RemoteActive = 6;
+    const byte SetEdges = 1, Free = 2, MoveTo = 3, Button = 4, Key = 5, RemoteActive = 6, CrossNow = 7, Hold = 8;
     // helper -> main
-    const byte Crossed = 20, Forward = 21, Emergency = 22, Stray = 23, Ready = 24;
+    const byte Crossed = 20, Forward = 21, Emergency = 22, Stray = 23, Ready = 24, UpHeld = 25;
 
     static string PipeName =>
         $"LocalSendDrop.input.{Process.GetCurrentProcess().SessionId}.{WindowsIdentity.GetCurrent().User!.Value}";
@@ -100,10 +100,12 @@ static class AdminHelper
         }
 
         var remoteActive = false;
+        var upHeld = false;
         long freedAt = 0;
         using var engine = new InputEngine();
-        // Only play input while something crossed over: a paired PC here, or this PC's input there.
-        bool MayInject() => remoteActive || engine.Captured || Environment.TickCount64 - freedAt < 3000;
+        // Only play input while something crossed over: a paired PC here, or this PC's input there
+        // (or a drop of files from there is waiting to be played).
+        bool MayInject() => remoteActive || engine.Captured || upHeld || Environment.TickCount64 - freedAt < 3000;
 
         engine.Crossed += (e, p) => Send(Frame(Crossed, [(byte)e, .. Ints(p.X, p.Y)]));
         engine.Forward += m => Send(Frame(Forward, m));
@@ -113,6 +115,7 @@ static class AdminHelper
             freedAt = Environment.TickCount64;
             Send(Frame(Stray, Ints(now.X, now.Y, expected.X, expected.Y, (int)(slowest * 1000))));
         };
+        engine.LeftUpHeld += () => { upHeld = true; Send(Frame(UpHeld)); };
         Send(Frame(Ready));
         KvmLog.Write("helper: connected to LocalSend Drop");
 
@@ -123,8 +126,13 @@ static class AdminHelper
                 case SetEdges when f.Length >= 2: engine.SetEdges(f[1]); break;
                 case Free: engine.Free(); freedAt = Environment.TickCount64; break;
                 case RemoteActive when f.Length >= 2: remoteActive = f[1] != 0; break;
+                case CrossNow when f.Length >= 10: engine.Cross((Edge)f[1], new Point(Int(f, 2), Int(f, 6))); break;
+                case Hold when f.Length >= 2: engine.HoldLeftUp(f[1] != 0); break;
                 case MoveTo when f.Length >= 9 && MayInject(): Inject.MoveTo(Int(f, 1), Int(f, 5)); break;
-                case Button when f.Length >= 6 && MayInject(): Inject.Button((MouseKind)f[1], Int(f, 2)); break;
+                case Button when f.Length >= 6 && MayInject():
+                    Inject.Button((MouseKind)f[1], Int(f, 2));
+                    if ((MouseKind)f[1] == MouseKind.LeftUp) upHeld = false;
+                    break;
                 case Key when f.Length >= 7 && MayInject():
                     Inject.Key(BinaryPrimitives.ReadUInt16LittleEndian(f.AsSpan(1)), BinaryPrimitives.ReadUInt16LittleEndian(f.AsSpan(3)), f[5] != 0, f[6] != 0);
                     break;
@@ -315,6 +323,8 @@ static class AdminHelper
     internal static byte[] FrameSetEdges(int mask) => Frame(SetEdges, [(byte)mask]);
     internal static byte[] FrameFree() => Frame(Free);
     internal static byte[] FrameRemoteActive(bool on) => Frame(RemoteActive, [(byte)(on ? 1 : 0)]);
+    internal static byte[] FrameCross(Edge e, Point p) => Frame(CrossNow, [(byte)e, .. Ints(p.X, p.Y)]);
+    internal static byte[] FrameHold(bool on) => Frame(Hold, [(byte)(on ? 1 : 0)]);
     internal static byte[] FrameMoveTo(int x, int y) => Frame(MoveTo, Ints(x, y));
     internal static byte[] FrameButton(MouseKind k, int data) => Frame(Button, [(byte)k, .. Ints(data)]);
     internal static byte[] FrameKey(ushort vk, ushort scan, bool up, bool ext)
@@ -334,6 +344,7 @@ static class AdminHelper
             case Crossed when f.Length >= 10: c.OnCrossed((Edge)f[1], new Point(Int(f, 2), Int(f, 6))); break;
             case Forward when f.Length >= 2: c.OnForward(f[1..]); break;
             case Emergency: c.OnEmergency(); break;
+            case UpHeld: c.OnUpHeld(); break;
             case Stray when f.Length >= 21: c.OnStray(new Point(Int(f, 1), Int(f, 5)), new Point(Int(f, 9), Int(f, 13)), Int(f, 17) / 1000.0); break;
         }
     }
@@ -351,6 +362,7 @@ sealed class HelperClient : IInputSource, IInjector
     public event Action<byte[]>? Forward;
     public event Action? Emergency;
     public event Action<Point, Point, double>? Stray;
+    public event Action? LeftUpHeld;
     /// <summary>The helper went away (it exits if it's stopped or the pipe breaks).</summary>
     public event Action? Lost;
 
@@ -373,6 +385,7 @@ sealed class HelperClient : IInputSource, IInjector
     internal void OnCrossed(Edge e, Point p) => Crossed?.Invoke(e, p);
     internal void OnForward(byte[] m) => Forward?.Invoke(m);
     internal void OnEmergency() => Emergency?.Invoke();
+    internal void OnUpHeld() => LeftUpHeld?.Invoke();
     internal void OnStray(Point now, Point expected, double slowest) => Stray?.Invoke(now, expected, slowest);
 
     bool Send(byte[] frame)
@@ -397,6 +410,8 @@ sealed class HelperClient : IInputSource, IInjector
     public void SetEdges(int mask) => Send(AdminHelper.FrameSetEdges(mask));
     public void Free() => Send(AdminHelper.FrameFree());
     public void SetRemoteActive(bool on) => Send(AdminHelper.FrameRemoteActive(on));
+    public void Cross(Edge edge, Point p) => Send(AdminHelper.FrameCross(edge, p));
+    public void HoldLeftUp(bool on) => Send(AdminHelper.FrameHold(on));
 
     public bool MoveTo(int x, int y) => Send(AdminHelper.FrameMoveTo(x, y));
     public bool Button(MouseKind kind, int data) => Send(AdminHelper.FrameButton(kind, data));
