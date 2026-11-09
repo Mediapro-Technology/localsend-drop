@@ -21,6 +21,8 @@ static class Program
         if (args.Length >= 1 && args[0] == "--kvm-hooktest") return InputTest.HookTest(args.Length > 1 && int.TryParse(args[1], out var s) ? s : 10);
         if (args.Length == 1 && args[0] == "--kvm-injecttest") return InputTest.InjectTest();
         if (args.Length == 1 && args[0] == "--kvm-loopback") return KvmTest.Loopback();
+        if (args.Length == 1 && args[0] == "--input-helper") return AdminHelper.RunHelper();
+        if (args.Length == 1 && args[0] == "--kvm-helpertest") return HelperTest.Run();
 
         // Explorer's "Send with LocalSend Drop" passes: --share "<path>"
         var share = args.Length >= 2 && args[0] == "--share" ? args.Skip(1).ToList() : null;
@@ -340,6 +342,19 @@ static class Program
             var side = edge switch { Edge.Left => "left", Edge.Right => "right", Edge.Top => "top", _ => "bottom" };
             Notify($"Paired. Push the pointer off the {side} edge to use {name}. Ctrl+Alt+Home brings it back.", false);
         };
+        async void SetAdminHelper(bool on)
+        {
+            var error = on ? await AdminHelper.InstallAsync() : await AdminHelper.UninstallAsync();
+            if (error != null && on)
+            {
+                Notify($"Admin windows stay out of reach: {error}", true);
+                return;
+            }
+            Settings.Current.AdminHelper = on;
+            Settings.Current.Save();
+            kvm?.UseHelper(on);
+            Notify(on ? "Paired PCs can now use admin windows here" : "Admin windows are out of reach again", false);
+        }
         panel.SetKvmEdge = (d, edge) =>
         {
             if (edge is { } e)
@@ -399,6 +414,7 @@ static class Program
             s.Sound = f.Sound;
             s.AutoUpdate = f.AutoUpdate;
             s.DoNotDisturb = f.DoNotDisturb;
+            if (f.AdminHelper != s.AdminHelper) SetAdminHelper(f.AdminHelper);
             s.Theme = f.Theme;
             s.ZoneStyle = f.ZoneStyle;
             s.OpenDelay = f.OpenDelay;

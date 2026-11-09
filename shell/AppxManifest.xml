@@ -40,6 +40,8 @@
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />
     <rescap:Capability Name="unvirtualizedResources" />
+    <!-- The admin helper (Settings > Control administrator windows) runs this exe elevated. -->
+    <rescap:Capability Name="allowElevation" />
   </Capabilities>
 
   <Applications>

@@ -41,7 +41,7 @@ sealed class SettingsForm : Form
     readonly PillButton _browse = new("Browse");
     readonly List<RadioRow> _modes = [];
     readonly CornerPicker _corner = new();
-    readonly ToggleSwitch _sound = new(), _autostart = new(), _update = new(), _quiet = new();
+    readonly ToggleSwitch _sound = new(), _autostart = new(), _update = new(), _quiet = new(), _admin = new();
     readonly PillButton _forget = new("Forget");
     readonly PillButton _install = new("Install", primary: true);
     readonly PillButton _checkUpdates = new("Check for updates");
@@ -83,6 +83,7 @@ sealed class SettingsForm : Form
         _autostart.Checked = autostart;
         _update.Checked = s.AutoUpdate;
         _quiet.Checked = s.DoNotDisturb;
+        _admin.Checked = s.AdminHelper;
         _forget.Click += (_, _) => { ForgetTrusted = true; _forget.Enabled = false; _forget.Text = "Forgotten"; };
         _install.Click += async (_, _) =>
         {
@@ -150,6 +151,11 @@ sealed class SettingsForm : Form
             _looks.Add(row);
         }
         _scroll.Add(new Card("Theme", null, below: [.. _looks]));
+
+        _scroll.Add(new SectionHeader("Mouse and keyboard"));
+        _scroll.Add(new Card("Control administrator windows",
+            "Lets a paired PC click and type in admin windows here, and stops them taking the mouse when you cross over. Windows asks for permission once.",
+            right: _admin, rightWidth: 84));
 
         _scroll.Add(new SectionHeader("General"));
         _scroll.Add(new Card("Sound", "Play a sound when someone sends you something", right: _sound, rightWidth: 84));
@@ -259,6 +265,7 @@ sealed class SettingsForm : Form
     public bool Autostart => _autostart.Checked;
     public bool AutoUpdate => _update.Checked;
     public bool DoNotDisturb => _quiet.Checked;
+    public bool AdminHelper => _admin.Checked;
     public bool ForgetTrusted { get; private set; }
     public int OpenDelay => Delays[Math.Max(0, _delays.FindIndex(r => r.Selected))].Ms;
     public string ZoneStyle => Zones[Math.Max(0, _zones.FindIndex(r => r.Selected))].Key;

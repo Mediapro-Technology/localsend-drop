@@ -21,6 +21,9 @@ static class KvmRemote
     static Session? _active;
     static readonly object Lock = new();
 
+    /// <summary>A paired PC started (true) or stopped (false) using this PC's input. The admin helper only plays input in between.</summary>
+    public static Action<bool>? ActiveChanged;
+
     public static async Task Accept(HttpContext ctx)
     {
         if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
@@ -86,6 +89,7 @@ static class KvmRemote
                 if (_active != null && _active != this) lock (_active) _active.Off();
                 _active = this;
             }
+            ActiveChanged?.Invoke(true);
             _on = true;
             _enteredAt = Environment.TickCount64;
             _push = 0;
@@ -163,8 +167,11 @@ static class KvmRemote
                     MouseKind.MiddleDown => MouseKind.MiddleUp, _ => MouseKind.XUp,
                 }, data);
             _buttons.Clear();
+            var was = _on;
             _on = false;
-            lock (Lock) if (_active == this) _active = null;
+            var last = false;
+            lock (Lock) if (_active == this) { _active = null; last = true; }
+            if (was && last) ActiveChanged?.Invoke(false);
         }
 
         void Watch()

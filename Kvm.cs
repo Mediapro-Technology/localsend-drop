@@ -14,7 +14,6 @@ namespace LocalSendDrop;
 /// </summary>
 sealed class Kvm : IDisposable
 {
-    const int ResistanceMs = 150;     // rest against the edge this long before crossing
     const int TimeoutMs = 1200;       // no word from them this long: take control back
     const int ReturnInset = 6;        // px inside our edge when the pointer comes back
 
@@ -22,9 +21,11 @@ sealed class Kvm : IDisposable
     readonly Discovery _discovery;
     readonly Action<Action> _ui;
     readonly Action<string, bool> _notify;
-    InputHook _hook;
+    // The local hooks, or the admin helper once it's connected. Switched only while not crossed over.
+    volatile IInputSource _source;
+    readonly object _switch = new();
+    bool _wantHelper;
     readonly CaptureWindow _capture;
-    int _strayBeats;            // beats in a row where this PC's own pointer moved while crossed over
     readonly System.Threading.Timer _beat;
     // Changed on the UI thread, read on the hook thread.
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, KvmLink> _links = new(StringComparer.OrdinalIgnoreCase);
@@ -34,16 +35,8 @@ sealed class Kvm : IDisposable
     readonly System.Threading.Channels.Channel<Action> _pointer = System.Threading.Channels.Channel.CreateUnbounded<Action>(
         new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true });
     long _lastHeard;
-    Point _last;                      // where the (hidden) pointer really is while crossed over
     Point _crossedAt;
     Edge _crossedEdge;
-    long _crossedTicks;
-    // Hook thread only:
-    readonly HashSet<ushort> _localDown = [];
-    readonly HashSet<ushort> _remoteDown = [];
-    int _buttonsDown;
-    Edge? _restingOn;
-    long _restingSince;
 
     public Kvm(Identity id, Discovery discovery, Action<Action> ui, Action<string, bool> notify)
     {
@@ -53,9 +46,10 @@ sealed class Kvm : IDisposable
         _notify = notify;
         HiddenCursor.RecoverAfterCrash();
         _capture = new CaptureWindow();
+        _source = Wire(new InputEngine());
         Sync();
         Pairing.Changed += Sync;
-        _hook = NewHook();
+        KvmRemote.ActiveChanged = on => (_source as HelperClient)?.SetRemoteActive(on);
         KvmLog.Write($"started; paired: {string.Join(", ", Pairing.All.Select(p => $"{p.Alias} {p.Edge}"))}");
         _beat = new System.Threading.Timer(_ => Beat(), null, 250, 250);
         _ = Task.Run(async () =>
@@ -63,6 +57,77 @@ sealed class Kvm : IDisposable
             await foreach (var work in _pointer.Reader.ReadAllAsync())
                 try { work(); } catch { }
         });
+        if (Settings.Current.AdminHelper) UseHelper(true);
+    }
+
+    /// <summary>Whether input comes through the elevated admin helper right now.</summary>
+    public bool HelperConnected => _source is HelperClient;
+
+    IInputSource Wire(IInputSource s)
+    {
+        s.Crossed += OnCrossed;
+        s.Forward += m => { if (_active is { } l) l.Send(m); else s.Free(); };
+        s.Emergency += () => Release(BackPoint(), null, "Ctrl+Alt+Home");
+        s.Stray += OnStray;
+        return s;
+    }
+
+    void Use(IInputSource next)
+    {
+        IInputSource old;
+        lock (_switch)
+        {
+            if (_active != null) TakeBack();
+            old = _source;
+            _source = next;
+            Inject.Via = next as IInjector;
+        }
+        old.Dispose();
+        UpdateEdges();
+    }
+
+    /// <summary>Turns the admin helper on (starting it through its task) or off (back to this process's hooks).</summary>
+    public void UseHelper(bool on)
+    {
+        _wantHelper = on;
+        if (!on)
+        {
+            if (_source is HelperClient) { Use(Wire(new InputEngine())); KvmLog.Write("using this process's hooks"); }
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            if (_source is HelperClient || !_wantHelper) return;
+            var helper = await AdminHelper.StartAsync();
+            if (helper == null)
+            {
+                _ui(() => _notify("Couldn't start the admin helper, so admin windows stay out of reach. Turn it off and on in Settings to set it up again.", true));
+                return;
+            }
+            if (!_wantHelper) { helper.Dispose(); return; }
+            helper.Lost += () => OnHelperLost(helper);
+            Use(Wire(helper));
+            KvmLog.Write("using the admin helper");
+        });
+    }
+
+    void OnHelperLost(HelperClient helper)
+    {
+        if (_source != helper) return;
+        KvmLog.Write("the admin helper went away");
+        if (_active != null) Release(BackPoint(), "The admin helper stopped, so control is back on this PC.", "helper lost");
+        Use(Wire(new InputEngine()));
+        // Bring it back after a pause, unless it was turned off.
+        _ = Task.Delay(10_000).ContinueWith(_ => { if (_wantHelper && _source is not HelperClient) UseHelper(true); });
+    }
+
+    /// <summary>Tells the input source which edges have a connected paired PC.</summary>
+    void UpdateEdges()
+    {
+        var mask = 0;
+        foreach (var p in Pairing.All)
+            if (_links.TryGetValue(p.Fingerprint, out var l) && l.IsConnected) mask |= 1 << (int)p.Edge;
+        _source.SetEdges(mask);
     }
 
     /// <summary>Whether input is going to another PC right now.</summary>
@@ -70,8 +135,6 @@ sealed class Kvm : IDisposable
 
     /// <summary>Gives control back to this PC (it's locking, the app is closing…).</summary>
     public void TakeBack(string? why = null) => Release(BackPoint(), why, "taken back");
-
-    InputHook NewHook() => new() { OnMouse = OnMouse, OnKey = OnKey };
 
     /// <summary>One link per paired PC. UI thread.</summary>
     void Sync()
@@ -91,10 +154,12 @@ sealed class Kvm : IDisposable
             {
                 KvmLog.Write($"link to {l.Name} dropped");
                 if (_active == l) Release(BackPoint(), $"Lost the connection to {l.Name}", "link dropped");
+                UpdateEdges();
             };
-            link.Connected += l => KvmLog.Write($"link to {l.Name} connected");
+            link.Connected += l => { KvmLog.Write($"link to {l.Name} connected"); UpdateEdges(); };
             _links[fp] = link;
         }
+        UpdateEdges();
     }
 
     KvmLink? LinkOn(Edge e)
@@ -103,69 +168,19 @@ sealed class Kvm : IDisposable
         return p != null && _links.TryGetValue(p.Fingerprint, out var l) && l.IsConnected ? l : null;
     }
 
-    // ---- hook thread ----
+    // ---- the input source (any thread) ----
 
-    bool OnMouse(MouseEvent e)
+    void OnCrossed(Edge edge, Point p)
     {
-        var active = _active;
-        if (active != null)
-        {
-            var p = new Point(e.X, e.Y);
-            if (e.Injected) { if (e.Kind == MouseKind.Move) _last = p; return false; }
-            if (e.Kind == MouseKind.Move)
-            {
-                int dx = p.X - _last.X, dy = p.Y - _last.Y;
-                if (dx != 0 || dy != 0) active.Send(KvmWire.Move(dx, dy));
-            }
-            else active.Send(KvmWire.Mouse(e.Kind, e.Data));
-            return true;
-        }
-
-        if (e.Injected) return false;
-        switch (e.Kind)
-        {
-            case MouseKind.LeftDown or MouseKind.RightDown or MouseKind.MiddleDown or MouseKind.XDown: _buttonsDown++; break;
-            case MouseKind.LeftUp or MouseKind.RightUp or MouseKind.MiddleUp or MouseKind.XUp: _buttonsDown = Math.Max(0, _buttonsDown - 1); break;
-            case MouseKind.Move: CheckEdge(new Point(e.X, e.Y)); break;
-        }
-        return false;
-    }
-
-    void CheckEdge(Point p)
-    {
-        if (_buttonsDown > 0 || _links.IsEmpty) { _restingOn = null; return; }
+        var source = _source;
+        var link = LinkOn(edge);
         var desk = Inject.Desktop;
-        Edge? at = null;
-        foreach (var e in (Edge[])[Edge.Left, Edge.Right, Edge.Top, Edge.Bottom])
-            if (KvmWire.AtEdge(e, p, desk) && !NearCorner(e, p, desk) && LinkOn(e) != null) { at = e; break; }
-        if (at == null) { _restingOn = null; return; }
-        var now = Stopwatch.GetTimestamp();
-        if (_restingOn != at) { _restingOn = at; _restingSince = now; return; }
-        if (Stopwatch.GetElapsedTime(_restingSince, now).TotalMilliseconds < ResistanceMs) return;
-        _restingOn = null;
-        if (LinkOn(at.Value) is { } link) Cross(link, at.Value, p, desk);
-    }
-
-    /// <summary>Corners stay here, so Start, close buttons and hot corners keep working.</summary>
-    static bool NearCorner(Edge e, Point p, Rectangle d)
-    {
-        var (pos, start, length) = e is Edge.Left or Edge.Right ? (p.Y, d.Top, d.Height) : (p.X, d.Left, d.Width);
-        var margin = Math.Max(30, length * 3 / 100);
-        return pos - start < margin || start + length - 1 - pos < margin;
-    }
-
-    void Cross(KvmLink link, Edge edge, Point p, Rectangle desk)
-    {
-        if (!link.Send(KvmWire.Fraction(KvmMsg.Enter, KvmWire.Along(edge, p, desk)))) return;
-        lock (_remoteDown) _remoteDown.Clear();
+        if (link == null || !link.Send(KvmWire.Fraction(KvmMsg.Enter, KvmWire.Along(edge, p, desk)))) { source.Free(); return; }
         _crossedAt = p;
         _crossedEdge = edge;
-        _crossedTicks = Stopwatch.GetTimestamp();
-        _last = p;
         Volatile.Write(ref _lastHeard, Environment.TickCount64);
         _active = link;
-        _strayBeats = 0;
-        KvmLog.Write($"crossed to {link.Name} over {edge} at {p}");
+        KvmLog.Write($"crossed to {link.Name} over {edge} at {p}{(source is HelperClient ? " (admin helper)" : "")}");
         // Park the hidden pointer mid-screen so moves in every direction register.
         var park = Screen.FromPoint(p).Bounds;
         var centre = new Point(park.Left + park.Width / 2, park.Top + park.Height / 2);
@@ -178,46 +193,24 @@ sealed class Kvm : IDisposable
         _ui(() =>
         {
             if (_active != link) return;
-            // Our own window under the parked pointer and holding the keyboard, so an admin
-            // window on this PC can't take the mouse or keys from the hook.
-            if (!_capture.Engage(park) && AdminWindow(GetForegroundWindow()))
+            // Without the admin helper: our own window under the parked pointer and holding the
+            // keyboard, so an admin window on this PC can't take the mouse or keys from the hook.
+            if (source is InputEngine && !_capture.Engage(park) && AdminWindow(GetForegroundWindow()))
             {
                 KvmLog.Write("an admin window kept the keyboard focus");
-                _notify("An administrator window here has the keyboard, so keys may stay on this PC. Click away from it first.", true);
+                _notify("An administrator window here has the keyboard, so keys may stay on this PC. Click away from it first, or turn on Control administrator windows in Settings.", true);
             }
             if (Clip.ForSync() is { } clip) link.Send(clip);
         });
     }
 
-    bool OnKey(KeyEvent e)
+    void OnStray(Point now, Point expected, double slowest)
     {
-        if (e.Injected) return false;
-        if (_active is not { } active)
-        {
-            if (e.Up) _localDown.Remove(e.Vk); else _localDown.Add(e.Vk);
-            return false;
-        }
-
-        // Keys held on this PC before crossing finish here, so nothing sticks.
-        if (_localDown.Contains(e.Vk))
-        {
-            if (e.Up) { _localDown.Remove(e.Vk); return false; }
-            return true;
-        }
-
-        if (!e.Up && e.Vk == 0x24 && Held(0xA2, 0xA3, 0x11) && Held(0xA4, 0xA5, 0x12))   // Ctrl+Alt+Home
-        {
-            Release(BackPoint(), null, "Ctrl+Alt+Home");
-            return true;
-        }
-        lock (_remoteDown) { if (e.Up) _remoteDown.Remove(e.Vk); else _remoteDown.Add(e.Vk); }
-        active.Send(KvmWire.Key(e));
-        return true;
-    }
-
-    bool Held(params ushort[] vks)
-    {
-        lock (_remoteDown) return vks.Any(_remoteDown.Contains);
+        var admin = AdminWindowAt(now);
+        KvmLog.Write($"input got past the hook (pointer at {now}, expected {expected}, admin window: {admin}, slowest hook {slowest:0.0} ms); hook reinstalled");
+        Release(now, admin
+            ? "An administrator window on this PC took the mouse, so control is back here. Move the pointer off it and cross again, or turn on Control administrator windows in Settings."
+            : "Windows stopped passing the mouse to LocalSend Drop, so control is back here. Cross again to carry on.", "input got past the hook");
     }
 
     // ---- links (reading threads) and the beat ----
@@ -249,27 +242,7 @@ sealed class Kvm : IDisposable
         }
         link.Send(KvmWire.Simple(KvmMsg.Beat));
         if (Environment.TickCount64 - Volatile.Read(ref _lastHeard) > TimeoutMs)
-        {
             Release(BackPoint(), $"{link.Name} stopped answering. Control is back on this PC.", "timed out");
-            return;
-        }
-
-        // While crossed over, this PC's pointer only moves when we park it. If it moves anyway,
-        // input is getting past the hook (an admin window under it, or Windows dropped the hook):
-        // take control back, show the pointer, and put in a fresh hook.
-        if (Stopwatch.GetElapsedTime(_crossedTicks).TotalMilliseconds < 600) return;
-        var now = Inject.CursorPos;
-        if (Math.Abs(now.X - _last.X) + Math.Abs(now.Y - _last.Y) <= 3) { _strayBeats = 0; return; }
-        if (++_strayBeats < 2) return;
-        var admin = AdminWindowAt(now);
-        KvmLog.Write($"input got past the hook (pointer at {now}, expected {_last}, admin window: {admin}, slowest hook {_hook.MaxCallbackMs:0.0} ms)");
-        Release(now, admin
-            ? "An administrator window on this PC took the mouse, so control is back here. Move the pointer off it, then cross again."
-            : "Windows stopped passing the mouse to LocalSend Drop, so control is back here. Cross again to carry on.", "input got past the hook");
-        var old = _hook;
-        _hook = NewHook();
-        old.Dispose();
-        KvmLog.Write("hook reinstalled");
     }
 
     Point BackPoint()
@@ -283,8 +256,8 @@ sealed class Kvm : IDisposable
         var link = Interlocked.Exchange(ref _active, null);
         if (link == null) return;
         KvmLog.Write($"back from {link.Name}: {cause}");
+        _source.Free();
         link.Send(KvmWire.Simple(KvmMsg.Release));
-        lock (_remoteDown) _remoteDown.Clear();
         _pointer.Writer.TryWrite(() =>
         {
             Inject.MoveTo(at.X, at.Y);
@@ -329,7 +302,9 @@ sealed class Kvm : IDisposable
         TakeBack();
         _pointer.Writer.TryComplete();
         _capture.Dispose();
-        _hook.Dispose();
+        _wantHelper = false;
+        Inject.Via = null;
+        _source.Dispose();
         HiddenCursor.Show();
         foreach (var l in _links.Values) l.Dispose();
     }

@@ -126,9 +126,20 @@ sealed class InputHook : IDisposable
     }
 }
 
+/// <summary>Something that plays input for us: the elevated admin helper.</summary>
+interface IInjector
+{
+    bool MoveTo(int x, int y);
+    bool Button(MouseKind kind, int data);
+    bool Key(ushort vk, ushort scan, bool up, bool extended);
+}
+
 /// <summary>Plays input on this PC, as if from its own mouse and keyboard.</summary>
 static class Inject
 {
+    /// <summary>When set (the admin helper is connected), input is played there, so it reaches admin windows too.</summary>
+    public static volatile IInjector? Via;
+
     /// <summary>Tags our own injected input so our hooks can tell it apart.</summary>
     public static readonly nuint Marker = 0x4C534452; // "LSDR"
 
@@ -140,6 +151,7 @@ static class Inject
     /// <summary>Puts the pointer at a desktop pixel. Absolute, so this PC's pointer acceleration isn't applied twice.</summary>
     public static void MoveTo(int x, int y)
     {
+        if (Via is { } via && via.MoveTo(x, y)) return;
         var d = Desktop;
         var nx = (int)((x - d.Left) * 65535L / Math.Max(1, d.Width - 1));
         var ny = (int)((y - d.Top) * 65535L / Math.Max(1, d.Height - 1));
@@ -149,6 +161,7 @@ static class Inject
     /// <summary>Presses or releases a button, or turns a wheel (data = delta, or the X button 1/2).</summary>
     public static void Button(MouseKind kind, int data = 0)
     {
+        if (Via is { } via && via.Button(kind, data)) return;
         var (flags, mouseData) = kind switch
         {
             MouseKind.LeftDown => (0x0002u, 0), MouseKind.LeftUp => (0x0004u, 0),
@@ -164,6 +177,7 @@ static class Inject
     /// <summary>Presses or releases a key. By scan code when there is one, so the other PC's keyboard layout applies.</summary>
     public static void Key(ushort vk, ushort scan, bool up, bool extended)
     {
+        if (Via is { } via && via.Key(vk, scan, up, extended)) return;
         uint flags = (up ? Native.KEYEVENTF_KEYUP : 0) | (extended ? Native.KEYEVENTF_EXTENDEDKEY : 0);
         if (scan != 0) flags |= Native.KEYEVENTF_SCANCODE;
         var input = new Native.INPUT
