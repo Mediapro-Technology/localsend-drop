@@ -399,7 +399,6 @@ static class Program
             s.Sound = f.Sound;
             s.AutoUpdate = f.AutoUpdate;
             s.DoNotDisturb = f.DoNotDisturb;
-            s.AutoQuiet = f.AutoQuiet;
             s.Theme = f.Theme;
             s.ZoneStyle = f.ZoneStyle;
             s.OpenDelay = f.OpenDelay;

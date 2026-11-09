@@ -146,8 +146,7 @@ static class Pairing
         if (Proven(ctx) is not { } fingerprint) return Results.BadRequest("A client certificate is required.");
         var (alias, edge) = await ReadBody(ctx);
         if (edge is not { } theirSide) return Results.BadRequest();
-        // Someone has to accept at that PC anyway, so only Do not disturb set by hand blocks it.
-        if (Settings.Current.DoNotDisturb) return Quiet.Refusal();
+        if (Quiet.Active) return Quiet.Refusal();
         alias = (alias ?? "Someone")[..Math.Min((alias ?? "Someone").Length, 60)];
 
         var ask = AskAccept;

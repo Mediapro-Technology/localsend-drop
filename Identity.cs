@@ -82,8 +82,6 @@ sealed class Settings
     public int OpenDelay { get; set; } = 600;
     /// <summary>Decline incoming transfers (they're listed in Recent).</summary>
     public bool DoNotDisturb { get; set; }
-    /// <summary>Also be quiet while presenting or running something fullscreen.</summary>
-    public bool AutoQuiet { get; set; } = true;
     /// <summary>Names you gave devices, by fingerprint. Only you see them.</summary>
     public Dictionary<string, string> Nicknames { get; set; } = [];
     /// <summary>Named sets of devices ("Design team") that you send to in one go.</summary>

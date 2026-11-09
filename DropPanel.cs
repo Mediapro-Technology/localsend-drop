@@ -532,7 +532,6 @@ sealed class DropPanel : Form
         using (var line = new Pen(Ui.Divider)) g.DrawLine(line, 0, fy, w, fy);
         var footer = _refreshing ? "Searching for devices…"
             : Settings.Current.DoNotDisturb ? "Do not disturb is on"
-            : Quiet.Auto ? "Quiet while you're presenting"
             : _id.Alias;
         Ui.DrawText(g, footer, Ui.Caption, new Rectangle(pad, fy, _quiet.Left - pad - S(4), S(FooterH)), Ui.TextSecondary);
         // Like a Quick Settings toggle: accent-filled while on.
