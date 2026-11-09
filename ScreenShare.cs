@@ -62,10 +62,11 @@ static class ScreenShare
             using var client = LsHttp.Create(id, LsHttp.PinFor(target), TimeSpan.FromSeconds(8));
             var resp = await client.PostAsJsonAsync(target.Root + "/api/localsend-drop/v1/screen/offer",
                 new { alias = id.Alias, fingerprint = id.Fingerprint, port = ourPort, token }, Json.Options);
+            var quiet = (int)resp.StatusCode == 423 ? await Quiet.WhyAsync(resp) : null;
             return (int)resp.StatusCode switch
             {
                 200 => null,
-                423 => "they have Do not disturb on",
+                423 => quiet!,
                 404 or 405 => "they need the latest LocalSend Drop",
                 var code => $"their PC answered {code}",
             };

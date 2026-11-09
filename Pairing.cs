@@ -98,11 +98,12 @@ static class Pairing
             using var client = LsHttp.Create(id, LsHttp.PinFor(target), TimeSpan.FromMinutes(3));
             var resp = await client.PostAsJsonAsync(target.Root + Base + "/pair",
                 new { alias = id.Alias, edge = edge.ToString() }, Json.Options, ct);
+            var quiet = (int)resp.StatusCode == 423 ? await Quiet.WhyAsync(resp) : null;
             return (int)resp.StatusCode switch
             {
                 200 => null,
                 403 => "they declined",
-                423 => "they have Do not disturb on",
+                423 => quiet!,
                 404 or 405 => "they need the latest LocalSend Drop",
                 var code => $"their PC answered {code}",
             };
@@ -145,7 +146,8 @@ static class Pairing
         if (Proven(ctx) is not { } fingerprint) return Results.BadRequest("A client certificate is required.");
         var (alias, edge) = await ReadBody(ctx);
         if (edge is not { } theirSide) return Results.BadRequest();
-        if (Quiet.Active) return Results.StatusCode(423);
+        // Someone has to accept at that PC anyway, so only Do not disturb set by hand blocks it.
+        if (Settings.Current.DoNotDisturb) return Quiet.Refusal();
         alias = (alias ?? "Someone")[..Math.Min((alias ?? "Someone").Length, 60)];
 
         var ask = AskAccept;

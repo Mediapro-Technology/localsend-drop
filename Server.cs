@@ -171,7 +171,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         JsonElement body;
         try { body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body); }
         catch { return Results.BadRequest(); }
-        if (Quiet.Active) return Results.StatusCode(423);
+        if (Quiet.Active) return Quiet.Refusal();
         string? Str(string name) => body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         var claimed = Str("fingerprint") ?? "";
         var fingerprint = ctx.Connection.ClientCertificate is { } cc ? Identity.FingerprintOf(cc) : claimed;
@@ -187,7 +187,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         JsonElement body;
         try { body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body); }
         catch { return Results.BadRequest(); }
-        if (Quiet.Active) return Results.StatusCode(423);
+        if (Quiet.Active) return Quiet.Refusal();
         string? Str(string name) => body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         var fingerprint = ctx.Connection.ClientCertificate is { } cc ? Identity.FingerprintOf(cc) : Str("fingerprint") ?? "";
         var alias = Str("alias") ?? "Someone";
@@ -200,7 +200,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         JsonElement body;
         try { body = await JsonSerializer.DeserializeAsync<JsonElement>(ctx.Request.Body); }
         catch { return Results.BadRequest(); }
-        if (Quiet.Active) return Results.StatusCode(423);
+        if (Quiet.Active) return Quiet.Refusal();
         string? Str(string name) => body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         var token = Str("token");
         if (token is not { Length: > 16 }) return Results.BadRequest();

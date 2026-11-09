@@ -27,4 +27,21 @@ static class Quiet
     }
 
     public static bool Active => Settings.Current.DoNotDisturb || Auto;
+
+    /// <summary>423 with the reason, so the sender can say which kind of quiet it is.</summary>
+    public static Microsoft.AspNetCore.Http.IResult Refusal() =>
+        Microsoft.AspNetCore.Http.Results.Text(Settings.Current.DoNotDisturb ? "dnd" : "busy", statusCode: 423);
+
+    /// <summary>Sending side: why they answered 423. Older versions send no reason.</summary>
+    public static async Task<string> WhyAsync(HttpResponseMessage resp)
+    {
+        string body;
+        try { body = (await resp.Content.ReadAsStringAsync()).Trim(); } catch { body = ""; }
+        return body switch
+        {
+            "dnd" => "they have Do not disturb on",
+            "busy" => "they're presenting or have a full-screen app open, so LocalSend Drop is keeping quiet there",
+            _ => "they have Do not disturb on, or they're presenting or full screen",
+        };
+    }
 }

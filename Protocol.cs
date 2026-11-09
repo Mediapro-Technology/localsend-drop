@@ -116,10 +116,11 @@ static class Waves
             using var client = LsHttp.Create(id, LsHttp.PinFor(target), TimeSpan.FromSeconds(8));
             var resp = await client.PostAsJsonAsync(target.Root + "/api/localsend-drop/v1/wave",
                 new { alias = id.Alias, fingerprint = id.Fingerprint }, Json.Options);
+            var quiet = (int)resp.StatusCode == 423 ? await Quiet.WhyAsync(resp) : null;
             return (int)resp.StatusCode switch
             {
                 200 => null,
-                423 => "they have Do not disturb on",
+                423 => quiet!,
                 404 or 405 => "they need the latest LocalSend Drop",
                 var code => $"their PC answered {code}",
             };
@@ -153,10 +154,11 @@ static class FileRequests
             using var client = LsHttp.Create(id, LsHttp.PinFor(target), TimeSpan.FromSeconds(8));
             var resp = await client.PostAsJsonAsync(target.Root + "/api/localsend-drop/v1/request",
                 new { alias = id.Alias, fingerprint = id.Fingerprint, port = ourPort, note }, Json.Options);
+            var quiet = (int)resp.StatusCode == 423 ? await Quiet.WhyAsync(resp) : null;
             return (int)resp.StatusCode switch
             {
                 200 => null,
-                423 => "they have Do not disturb on",
+                423 => quiet!,
                 404 or 405 => "they need LocalSend Drop to receive requests",
                 var code => $"their PC answered {code}",
             };
