@@ -28,6 +28,9 @@ sealed class Kvm : IDisposable
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, KvmLink> _links = new(StringComparer.OrdinalIgnoreCase);
 
     volatile KvmLink? _active;
+    // Hiding and showing the pointer run in order on one worker, never in parallel.
+    readonly System.Threading.Channels.Channel<Action> _pointer = System.Threading.Channels.Channel.CreateUnbounded<Action>(
+        new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true });
     long _lastHeard;
     Point _last;                      // where the (hidden) pointer really is while crossed over
     Point _crossedAt;
@@ -50,6 +53,11 @@ sealed class Kvm : IDisposable
         Pairing.Changed += Sync;
         _hook = new InputHook { OnMouse = OnMouse, OnKey = OnKey };
         _beat = new System.Threading.Timer(_ => Beat(), null, 250, 250);
+        _ = Task.Run(async () =>
+        {
+            await foreach (var work in _pointer.Reader.ReadAllAsync())
+                try { work(); } catch { }
+        });
     }
 
     /// <summary>Whether input is going to another PC right now.</summary>
@@ -146,10 +154,11 @@ sealed class Kvm : IDisposable
         // Park the hidden pointer mid-screen so moves in every direction register.
         var park = Screen.FromPoint(p).Bounds;
         var centre = new Point(park.Left + park.Width / 2, park.Top + park.Height / 2);
-        Task.Run(() =>
+        _pointer.Writer.TryWrite(() =>
         {
+            if (_active != link) return;   // already back: don't hide
             HiddenCursor.Hide();
-            if (_active == link) Inject.MoveTo(centre.X, centre.Y);
+            Inject.MoveTo(centre.X, centre.Y);
         });
         _ui(() => { if (_active == link && Clip.ForSync() is { } clip) link.Send(clip); });
     }
@@ -207,7 +216,11 @@ sealed class Kvm : IDisposable
 
     void Beat()
     {
-        if (_active is not { } link) return;
+        if (_active is not { } link)
+        {
+            if (HiddenCursor.IsHidden) _pointer.Writer.TryWrite(() => { if (_active == null) HiddenCursor.Show(); });
+            return;
+        }
         link.Send(KvmWire.Simple(KvmMsg.Beat));
         if (Environment.TickCount64 - Volatile.Read(ref _lastHeard) > TimeoutMs)
             Release(BackPoint(), $"{link.Name} stopped answering. Control is back on this PC.");
@@ -225,7 +238,7 @@ sealed class Kvm : IDisposable
         if (link == null) return;
         link.Send(KvmWire.Simple(KvmMsg.Release));
         lock (_remoteDown) _remoteDown.Clear();
-        Task.Run(() =>
+        _pointer.Writer.TryWrite(() =>
         {
             Inject.MoveTo(at.X, at.Y);
             HiddenCursor.Show();
@@ -238,6 +251,7 @@ sealed class Kvm : IDisposable
         Pairing.Changed -= Sync;
         _beat.Dispose();
         TakeBack();
+        _pointer.Writer.TryComplete();
         _hook.Dispose();
         HiddenCursor.Show();
         foreach (var l in _links.Values) l.Dispose();
@@ -316,7 +330,8 @@ static class HiddenCursor
 {
     static readonly uint[] Ids = [32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644, 32645, 32646, 32648, 32649, 32650, 32651];
     static readonly object Lock = new();
-    static bool _hidden;
+    static volatile bool _hidden;
+    public static bool IsHidden => _hidden;
     static string Flag => Path.Combine(Identity.DataDir, "cursor-hidden");
 
     public static void Hide()

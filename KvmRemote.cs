@@ -12,6 +12,8 @@ namespace LocalSendDrop;
 static class KvmRemote
 {
     const int TimeoutMs = 1000;
+    const int GraceMs = 300;     // just arrived: a wobble back doesn't count
+    const int LeavePush = 40;    // px pushed against the facing edge before going back
 
     /// <summary>Runs work on the UI thread (clipboard).</summary>
     public static Action<Action> Ui = a => a();
@@ -33,6 +35,8 @@ static class KvmRemote
     {
         bool _on;
         Point _pos;
+        long _enteredAt;
+        int _push;
         long _lastHeard;
         readonly HashSet<(ushort vk, ushort scan, bool ext)> _keys = [];
         readonly HashSet<(MouseKind down, int data)> _buttons = [];
@@ -80,6 +84,8 @@ static class KvmRemote
                 _active = this;
             }
             _on = true;
+            _enteredAt = Environment.TickCount64;
+            _push = 0;
             _pos = KvmWire.OnEdge(Facing, f, Inject.Desktop, 1);
             Inject.MoveTo(_pos.X, _pos.Y);
         }
@@ -90,11 +96,18 @@ static class KvmRemote
             var next = new Point(_pos.X + dx, _pos.Y + dy);
             if (KvmWire.Past(Facing, next, desk))
             {
-                pipe.Send(KvmWire.Fraction(KvmMsg.Leave, KvmWire.Along(Facing, _pos, desk)));
-                Off();
-                Ui(() => { if (Clip.ForSync() is { } clip) pipe.Send(clip); });
-                return;
+                // Push against the edge to go back, like crossing over: a wobble isn't enough.
+                if (Environment.TickCount64 - _enteredAt > GraceMs) _push += Overshoot(Facing, next, desk);
+                if (_push >= LeavePush)
+                {
+                    pipe.Send(KvmWire.Fraction(KvmMsg.Leave, KvmWire.Along(Facing, _pos, desk)));
+                    Off();
+                    Ui(() => { if (Clip.ForSync() is { } clip) pipe.Send(clip); });
+                    return;
+                }
+                next = new Point(Math.Clamp(next.X, desk.Left, desk.Right - 1), Math.Clamp(next.Y, desk.Top, desk.Bottom - 1));
             }
+            else _push = 0;
             // Stay on a monitor: the desktop's bounding box can have gaps.
             if (!Screen.AllScreens.Any(s => s.Bounds.Contains(next)))
             {
@@ -104,6 +117,14 @@ static class KvmRemote
             _pos = next;
             Inject.MoveTo(_pos.X, _pos.Y);
         }
+
+        static int Overshoot(Edge e, Point p, Rectangle d) => e switch
+        {
+            Edge.Left => d.Left - p.X,
+            Edge.Right => p.X - (d.Right - 1),
+            Edge.Top => d.Top - p.Y,
+            _ => p.Y - (d.Bottom - 1),
+        };
 
         void Button(MouseKind kind, int data)
         {
@@ -220,14 +241,17 @@ static class KvmTest
             Thread.Sleep(100);
             Check(Near(Inject.CursorPos, new Point(entered.X + 100, entered.Y)), $"Move goes 100 px right (got {Inject.CursorPos})");
 
-            pipe.Send(KvmWire.Move(-300, 0));
+            pipe.Send(KvmWire.Move(-102, 0));   // a 1 px wobble past the edge
+            Check(Next(KvmMsg.Leave, 200) == null, "a small wobble past the edge doesn't send it back");
+            Thread.Sleep(300);
+            pipe.Send(KvmWire.Move(-60, 0));
             var leave = Next(KvmMsg.Leave, 1000);
             Check(leave != null && Math.Abs(KvmWire.ReadFraction(leave) - 0.5) < 0.01, "pushing past the facing edge sends Leave at the same height");
 
             pipe.Send(KvmWire.Move(50, 0));
             Thread.Sleep(100);
             var afterLeave = Inject.CursorPos;
-            Check(Near(afterLeave, new Point(entered.X + 100, entered.Y)), "input after Leave is ignored");
+            Check(Near(afterLeave, new Point(desk.Left, entered.Y)), $"input after Leave is ignored (got {afterLeave})");
 
             pipe.Send(KvmWire.Fraction(KvmMsg.Enter, 0.25));
             Check(Next(KvmMsg.Beat, 600) != null, "the controlled side sends heartbeats while in use");
