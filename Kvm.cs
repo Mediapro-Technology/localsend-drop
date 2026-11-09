@@ -22,7 +22,9 @@ sealed class Kvm : IDisposable
     readonly Discovery _discovery;
     readonly Action<Action> _ui;
     readonly Action<string, bool> _notify;
-    readonly InputHook _hook;
+    InputHook _hook;
+    readonly CaptureWindow _capture;
+    int _strayBeats;            // beats in a row where this PC's own pointer moved while crossed over
     readonly System.Threading.Timer _beat;
     // Changed on the UI thread, read on the hook thread.
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, KvmLink> _links = new(StringComparer.OrdinalIgnoreCase);
@@ -35,6 +37,7 @@ sealed class Kvm : IDisposable
     Point _last;                      // where the (hidden) pointer really is while crossed over
     Point _crossedAt;
     Edge _crossedEdge;
+    long _crossedTicks;
     // Hook thread only:
     readonly HashSet<ushort> _localDown = [];
     readonly HashSet<ushort> _remoteDown = [];
@@ -49,9 +52,11 @@ sealed class Kvm : IDisposable
         _ui = ui;
         _notify = notify;
         HiddenCursor.RecoverAfterCrash();
+        _capture = new CaptureWindow();
         Sync();
         Pairing.Changed += Sync;
-        _hook = new InputHook { OnMouse = OnMouse, OnKey = OnKey };
+        _hook = NewHook();
+        KvmLog.Write($"started; paired: {string.Join(", ", Pairing.All.Select(p => $"{p.Alias} {p.Edge}"))}");
         _beat = new System.Threading.Timer(_ => Beat(), null, 250, 250);
         _ = Task.Run(async () =>
         {
@@ -64,7 +69,9 @@ sealed class Kvm : IDisposable
     public bool CrossedOver => _active != null;
 
     /// <summary>Gives control back to this PC (it's locking, the app is closing…).</summary>
-    public void TakeBack(string? why = null) => Release(BackPoint(), why);
+    public void TakeBack(string? why = null) => Release(BackPoint(), why, "taken back");
+
+    InputHook NewHook() => new() { OnMouse = OnMouse, OnKey = OnKey };
 
     /// <summary>One link per paired PC. UI thread.</summary>
     void Sync()
@@ -80,7 +87,12 @@ sealed class Kvm : IDisposable
             var link = new KvmLink(_id, fp, () => _discovery.Devices.FirstOrDefault(d =>
                 string.Equals(d.Fingerprint, fp, StringComparison.OrdinalIgnoreCase)));
             link.Message += OnLinkMessage;
-            link.Dropped += l => { if (_active == l) Release(BackPoint(), $"Lost the connection to {l.Name}"); };
+            link.Dropped += l =>
+            {
+                KvmLog.Write($"link to {l.Name} dropped");
+                if (_active == l) Release(BackPoint(), $"Lost the connection to {l.Name}", "link dropped");
+            };
+            link.Connected += l => KvmLog.Write($"link to {l.Name} connected");
             _links[fp] = link;
         }
     }
@@ -88,7 +100,7 @@ sealed class Kvm : IDisposable
     KvmLink? LinkOn(Edge e)
     {
         var p = Pairing.All.FirstOrDefault(x => x.Edge == e);
-        return p != null && _links.TryGetValue(p.Fingerprint, out var l) && l.Connected ? l : null;
+        return p != null && _links.TryGetValue(p.Fingerprint, out var l) && l.IsConnected ? l : null;
     }
 
     // ---- hook thread ----
@@ -148,9 +160,12 @@ sealed class Kvm : IDisposable
         lock (_remoteDown) _remoteDown.Clear();
         _crossedAt = p;
         _crossedEdge = edge;
+        _crossedTicks = Stopwatch.GetTimestamp();
         _last = p;
         Volatile.Write(ref _lastHeard, Environment.TickCount64);
         _active = link;
+        _strayBeats = 0;
+        KvmLog.Write($"crossed to {link.Name} over {edge} at {p}");
         // Park the hidden pointer mid-screen so moves in every direction register.
         var park = Screen.FromPoint(p).Bounds;
         var centre = new Point(park.Left + park.Width / 2, park.Top + park.Height / 2);
@@ -160,7 +175,18 @@ sealed class Kvm : IDisposable
             HiddenCursor.Hide();
             Inject.MoveTo(centre.X, centre.Y);
         });
-        _ui(() => { if (_active == link && Clip.ForSync() is { } clip) link.Send(clip); });
+        _ui(() =>
+        {
+            if (_active != link) return;
+            // Our own window under the parked pointer and holding the keyboard, so an admin
+            // window on this PC can't take the mouse or keys from the hook.
+            if (!_capture.Engage(park) && AdminWindow(GetForegroundWindow()))
+            {
+                KvmLog.Write("an admin window kept the keyboard focus");
+                _notify("An administrator window here has the keyboard, so keys may stay on this PC. Click away from it first.", true);
+            }
+            if (Clip.ForSync() is { } clip) link.Send(clip);
+        });
     }
 
     bool OnKey(KeyEvent e)
@@ -181,7 +207,7 @@ sealed class Kvm : IDisposable
 
         if (!e.Up && e.Vk == 0x24 && Held(0xA2, 0xA3, 0x11) && Held(0xA4, 0xA5, 0x12))   // Ctrl+Alt+Home
         {
-            Release(BackPoint(), null);
+            Release(BackPoint(), null, "Ctrl+Alt+Home");
             return true;
         }
         lock (_remoteDown) { if (e.Up) _remoteDown.Remove(e.Vk); else _remoteDown.Add(e.Vk); }
@@ -203,10 +229,10 @@ sealed class Kvm : IDisposable
         switch ((KvmMsg)m[0])
         {
             case KvmMsg.Leave when _active == link:
-                Release(KvmWire.OnEdge(link.Edge, KvmWire.ReadFraction(m), Inject.Desktop, ReturnInset), null);
+                Release(KvmWire.OnEdge(link.Edge, KvmWire.ReadFraction(m), Inject.Desktop, ReturnInset), null, "came back over the edge");
                 break;
             case KvmMsg.Locked when _active == link:
-                Release(BackPoint(), $"{link.Name} is locked. Unlock it with its own keyboard.");
+                Release(BackPoint(), $"{link.Name} is locked. Unlock it with its own keyboard.", "they're locked");
                 break;
             case KvmMsg.ClipText or KvmMsg.ClipImage:
                 _ui(() => Clip.FromSync(m));
@@ -223,7 +249,27 @@ sealed class Kvm : IDisposable
         }
         link.Send(KvmWire.Simple(KvmMsg.Beat));
         if (Environment.TickCount64 - Volatile.Read(ref _lastHeard) > TimeoutMs)
-            Release(BackPoint(), $"{link.Name} stopped answering. Control is back on this PC.");
+        {
+            Release(BackPoint(), $"{link.Name} stopped answering. Control is back on this PC.", "timed out");
+            return;
+        }
+
+        // While crossed over, this PC's pointer only moves when we park it. If it moves anyway,
+        // input is getting past the hook (an admin window under it, or Windows dropped the hook):
+        // take control back, show the pointer, and put in a fresh hook.
+        if (Stopwatch.GetElapsedTime(_crossedTicks).TotalMilliseconds < 600) return;
+        var now = Inject.CursorPos;
+        if (Math.Abs(now.X - _last.X) + Math.Abs(now.Y - _last.Y) <= 3) { _strayBeats = 0; return; }
+        if (++_strayBeats < 2) return;
+        var admin = AdminWindowAt(now);
+        KvmLog.Write($"input got past the hook (pointer at {now}, expected {_last}, admin window: {admin}, slowest hook {_hook.MaxCallbackMs:0.0} ms)");
+        Release(now, admin
+            ? "An administrator window on this PC took the mouse, so control is back here. Move the pointer off it, then cross again."
+            : "Windows stopped passing the mouse to LocalSend Drop, so control is back here. Cross again to carry on.", "input got past the hook");
+        var old = _hook;
+        _hook = NewHook();
+        old.Dispose();
+        KvmLog.Write("hook reinstalled");
     }
 
     Point BackPoint()
@@ -232,10 +278,11 @@ sealed class Kvm : IDisposable
         return KvmWire.OnEdge(_crossedEdge, KvmWire.Along(_crossedEdge, _crossedAt, desk), desk, ReturnInset);
     }
 
-    void Release(Point at, string? why)
+    void Release(Point at, string? why, string cause)
     {
         var link = Interlocked.Exchange(ref _active, null);
         if (link == null) return;
+        KvmLog.Write($"back from {link.Name}: {cause}");
         link.Send(KvmWire.Simple(KvmMsg.Release));
         lock (_remoteDown) _remoteDown.Clear();
         _pointer.Writer.TryWrite(() =>
@@ -243,8 +290,37 @@ sealed class Kvm : IDisposable
             Inject.MoveTo(at.X, at.Y);
             HiddenCursor.Show();
         });
-        if (why != null) _ui(() => _notify(why, true));
+        _ui(() =>
+        {
+            if (_active == null) _capture.Disengage();
+            if (why != null) _notify(why, true);
+        });
     }
+
+    /// <summary>Whether the window under a point belongs to an elevated app (we can't read its token).</summary>
+    static bool AdminWindowAt(Point p) => AdminWindow(WindowFromPoint(new Native.POINT { X = p.X, Y = p.Y }));
+
+    static bool AdminWindow(nint hwnd)
+    {
+        if (hwnd == 0 || GetWindowThreadProcessId(hwnd, out var pid) == 0) return false;
+        var process = OpenProcess(0x1000, false, pid);   // PROCESS_QUERY_LIMITED_INFORMATION
+        if (process == 0) return true;
+        try
+        {
+            if (!OpenProcessToken(process, 0x0008, out var token)) return true;   // TOKEN_QUERY: denied for elevated apps
+            try { return GetTokenInformation(token, 20, out var elevated, 4, out _) && elevated != 0; }   // TokenElevation
+            finally { CloseHandle(token); }
+        }
+        finally { CloseHandle(process); }
+    }
+
+    [DllImport("user32.dll")] static extern nint WindowFromPoint(Native.POINT p);
+    [DllImport("user32.dll")] static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
+    [DllImport("kernel32.dll")] static extern nint OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("advapi32.dll")] static extern bool OpenProcessToken(nint process, uint access, out nint token);
+    [DllImport("advapi32.dll")] static extern bool GetTokenInformation(nint token, int cls, out int info, int length, out int returned);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(nint h);
 
     public void Dispose()
     {
@@ -252,6 +328,7 @@ sealed class Kvm : IDisposable
         _beat.Dispose();
         TakeBack();
         _pointer.Writer.TryComplete();
+        _capture.Dispose();
         _hook.Dispose();
         HiddenCursor.Show();
         foreach (var l in _links.Values) l.Dispose();
@@ -269,6 +346,7 @@ sealed class KvmLink : IDisposable
 
     public event Action<KvmLink, byte[]>? Message;
     public event Action<KvmLink>? Dropped;
+    public event Action<KvmLink>? Connected;
 
     public KvmLink(Identity id, string fingerprint, Func<Device?> find)
     {
@@ -278,7 +356,7 @@ sealed class KvmLink : IDisposable
         _ = Task.Run(Loop);
     }
 
-    public bool Connected => _pipe != null;
+    public bool IsConnected => _pipe != null;
     public string Name => Settings.Current.Nicknames.GetValueOrDefault(Fingerprint) ?? Pairing.Find(Fingerprint)?.Alias ?? "The other PC";
     public Edge Edge => Pairing.Find(Fingerprint)?.Edge ?? Edge.Right;
 
@@ -305,6 +383,7 @@ sealed class KvmLink : IDisposable
                     failures = 0;
                     var pipe = new WsPipe(ws);
                     _pipe = pipe;
+                    Connected?.Invoke(this);
                     await pipe.RunAsync(m => Message?.Invoke(this, m), _cts.Token);
                 }
                 catch (Exception) when (!_cts.IsCancellationRequested) { failures++; }
@@ -377,4 +456,79 @@ static class HiddenCursor
     [DllImport("user32.dll")] static extern bool SetSystemCursor(nint cursor, uint id);
     [DllImport("user32.dll")] static extern bool DestroyCursor(nint cursor);
     [DllImport("user32.dll")] static extern bool SystemParametersInfo(uint action, uint param, nint pv, uint winIni);
+}
+
+/// <summary>What the mouse-and-keyboard sharing did, for finding out why: %APPDATA%\\LocalSendDrop\\kvm.log.</summary>
+static class KvmLog
+{
+    static readonly object Lock = new();
+    static string LogPath => Path.Combine(Identity.DataDir, "kvm.log");
+
+    public static void Write(string line)
+    {
+        lock (Lock)
+        {
+            try
+            {
+                var info = new FileInfo(LogPath);
+                if (info.Exists && info.Length > 512 * 1024) File.Move(LogPath, LogPath + ".old", true);
+                File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  {line}{Environment.NewLine}");
+            }
+            catch { }
+        }
+    }
+}
+
+/// <summary>
+/// An invisible window over the monitor where the pointer is parked while input
+/// goes to another PC. Windows sends mouse input to the window under the pointer
+/// and keys to the focused one; when that's an administrator window, a normal
+/// app's hook never sees them. With this one on top and focused, it's ours.
+/// </summary>
+sealed class CaptureWindow : Form
+{
+    nint _before;
+
+    public CaptureWindow()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        BackColor = Color.Black;
+        Opacity = 1 / 255.0;   // invisible, but still under the mouse (fully transparent windows aren't)
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ExStyle |= 0x80; return cp; }   // toolwindow: not in Alt+Tab
+    }
+
+    /// <summary>Covers the monitor and takes the keyboard. False if Windows wouldn't give it focus.</summary>
+    public bool Engage(Rectangle monitor)
+    {
+        _before = GetForegroundWindow();
+        Bounds = monitor;
+        if (!Visible) Show();
+        Ui.KeepOnTop(Handle);
+        if (SetForegroundWindow(Handle)) return true;
+        // Windows only lets the app that sent the last input take focus: press and release Alt, then try again.
+        // (Alt is released after the switch, so it can't open the old window's menu.)
+        Inject.Key(0x12, 0, false, false);
+        var ok = SetForegroundWindow(Handle);
+        Inject.Key(0x12, 0, true, false);
+        return ok && GetForegroundWindow() == Handle;
+    }
+
+    public void Disengage()
+    {
+        if (!Visible) return;
+        Hide();
+        if (_before != 0 && IsWindow(_before)) SetForegroundWindow(_before);
+        _before = 0;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern nint GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(nint hwnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsWindow(nint hwnd);
 }

@@ -41,6 +41,8 @@ static class KvmRemote
         readonly HashSet<(ushort vk, ushort scan, bool ext)> _keys = [];
         readonly HashSet<(MouseKind down, int data)> _buttons = [];
 
+        string Name => Pairing.Find(fingerprint)?.Alias ?? "The other PC";
+
         /// <summary>Where the controlling PC is, seen from here.</summary>
         Edge Facing => Pairing.Find(fingerprint)?.Edge ?? Edge.Left;
 
@@ -77,7 +79,8 @@ static class KvmRemote
 
         void Enter(double f)
         {
-            if (InputLocked()) { pipe.Send(KvmWire.Simple(KvmMsg.Locked)); return; }
+            if (InputLocked()) { KvmLog.Write($"{Name} tried to cross over, but this PC is locked"); pipe.Send(KvmWire.Simple(KvmMsg.Locked)); return; }
+            KvmLog.Write($"{Name} crossed over");
             lock (Lock)
             {
                 if (_active != null && _active != this) lock (_active) _active.Off();
@@ -100,6 +103,7 @@ static class KvmRemote
                 if (Environment.TickCount64 - _enteredAt > GraceMs) _push += Overshoot(Facing, next, desk);
                 if (_push >= LeavePush)
                 {
+                    KvmLog.Write($"{Name} went back over the edge");
                     pipe.Send(KvmWire.Fraction(KvmMsg.Leave, KvmWire.Along(Facing, _pos, desk)));
                     Off();
                     Ui(() => { if (Clip.ForSync() is { } clip) pipe.Send(clip); });
@@ -169,8 +173,8 @@ static class KvmRemote
             {
                 if (!_on) return;
                 pipe.Send(KvmWire.Simple(KvmMsg.Beat));
-                if (InputLocked()) { pipe.Send(KvmWire.Simple(KvmMsg.Locked)); Off(); }
-                else if (Environment.TickCount64 - _lastHeard > TimeoutMs) Off();
+                if (InputLocked()) { KvmLog.Write("locked while in use"); pipe.Send(KvmWire.Simple(KvmMsg.Locked)); Off(); }
+                else if (Environment.TickCount64 - _lastHeard > TimeoutMs) { KvmLog.Write($"{Name} went quiet; let go"); Off(); }
             }
         }
     }
