@@ -1,6 +1,8 @@
 # Builds LocalSend Drop at the given version and publishes it as a GitHub release.
 # Installed copies pick it up within 6 hours (or via "Check for updates").
 #   ./release.ps1 2.0.1 "Fixed the thing"
+#   ./release.ps1 2.6.0 "Try this" -Prerelease   # download only: installed copies ignore pre-releases
+#   gh release edit v2.6.0 --prerelease=false --latest --repo Mediapro-Technology/localsend-drop   # then roll it out
 # Release assets:
 #   LocalSendDrop-Setup.exe  what people download: certificate + package, installs everything
 #   LocalSendDrop.msix  the app package (installed copies update from this)
@@ -9,7 +11,8 @@
 #   install.ps1         one-line installer for new PCs
 param(
     [Parameter(Mandatory)][string]$Version,
-    [string]$Notes = ""
+    [string]$Notes = "",
+    [switch]$Prerelease
 )
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -37,6 +40,7 @@ $ErrorActionPreference = "Stop"
 # Notes go through a file: Windows PowerShell mangles quotes inside native arguments.
 $notesFile = New-TemporaryFile
 Set-Content $notesFile $Notes -Encoding utf8
+$extra = if ($Prerelease) { @("--prerelease", "--latest=false") } else { @() }
 gh release create "v$Version" "$root\dist\LocalSendDrop-Setup.exe" "$root\dist\LocalSendDrop.msix" "$root\dist\LocalSendDrop.exe" "$root\dist\LocalSendDrop.cer" "$root\install.ps1" `
-    --repo Mediapro-Technology/localsend-drop --title "LocalSend Drop $Version" --notes-file $notesFile
+    --repo Mediapro-Technology/localsend-drop --title "LocalSend Drop $Version" --notes-file $notesFile @extra
 Remove-Item $notesFile

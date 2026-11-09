@@ -62,6 +62,57 @@ static class Clip
         return path;
     }
 
+    // ---- following the pointer to a paired PC ----
+
+    static uint _synced;
+
+    /// <summary>
+    /// UI thread. The clipboard as a crossing message, if it changed since we last
+    /// sent or received one. Text and images; files stay behind.
+    /// </summary>
+    public static byte[]? ForSync()
+    {
+        var seq = GetClipboardSequenceNumber();
+        if (seq == _synced) return null;
+        _synced = seq;
+        try
+        {
+            if (Clipboard.ContainsText())
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(Clipboard.GetText());
+                return bytes.Length <= 4 * 1024 * 1024 ? KvmWire.WithPayload(KvmMsg.ClipText, bytes) : null;
+            }
+            if (Clipboard.ContainsImage() && Clipboard.GetImage() is { } image)
+            {
+                using (image)
+                using (var ms = new MemoryStream())
+                {
+                    image.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    return ms.Length <= 16 * 1024 * 1024 ? KvmWire.WithPayload(KvmMsg.ClipImage, ms.ToArray()) : null;
+                }
+            }
+        }
+        catch (ExternalException) { }
+        return null;
+    }
+
+    /// <summary>UI thread. Puts what the other PC copied on this clipboard.</summary>
+    public static void FromSync(byte[] m)
+    {
+        try
+        {
+            if ((KvmMsg)m[0] == KvmMsg.ClipText) Clipboard.SetText(System.Text.Encoding.UTF8.GetString(m, 1, m.Length - 1));
+            else if ((KvmMsg)m[0] == KvmMsg.ClipImage)
+            {
+                using var ms = new MemoryStream(m, 1, m.Length - 1);
+                using var image = Image.FromStream(ms);
+                Clipboard.SetImage(image);
+            }
+            _synced = GetClipboardSequenceNumber();   // don't send it straight back
+        }
+        catch (Exception e) when (e is ExternalException or ArgumentException) { }
+    }
+
     /// <summary>Captures are only needed until they're sent; keep a day's worth.</summary>
     public static void CleanUp()
     {

@@ -18,6 +18,9 @@ static class Program
         if (args.Length == 1 && args[0] == "--qr-inbox") return Snapshot.QrInbox();
         if (args.Length == 2 && args[0] == "--screen-test") return Snapshot.ScreenTest(args[1]);
         if (args.Length == 3 && args[0] == "--send") return SendCli(args[1], args[2]);
+        if (args.Length >= 1 && args[0] == "--kvm-hooktest") return InputTest.HookTest(args.Length > 1 && int.TryParse(args[1], out var s) ? s : 10);
+        if (args.Length == 1 && args[0] == "--kvm-injecttest") return InputTest.InjectTest();
+        if (args.Length == 1 && args[0] == "--kvm-loopback") return KvmTest.Loopback();
 
         // Explorer's "Send with LocalSend Drop" passes: --share "<path>"
         var share = args.Length >= 2 && args[0] == "--share" ? args.Skip(1).ToList() : null;
@@ -302,6 +305,56 @@ static class Program
             card.OnScreenOffer(panel.Find(offer.Fingerprint) is { } d ? DropPanel.DisplayName(d) : offer.Alias, offer));
         card.WatchScreen = offer => new ScreenViewer(offer, id).Show();
 
+        // ---- one mouse and keyboard for paired PCs ----
+        Pairing.Ui = a => panel.BeginInvoke(a);
+        KvmRemote.Ui = a => panel.BeginInvoke(a);
+        Pairing.AskAccept = card.OnPairRequest;
+        Kvm? kvm = null;
+        try { kvm = new Kvm(id, discovery, a => panel.BeginInvoke(a), Notify); }
+        catch (Exception ex) { Notify($"Sharing the mouse and keyboard is off: {ex.Message}", true); }
+        // Locking or signing out here: control comes home first.
+        SystemEvents.SessionSwitch += (_, _) => kvm?.TakeBack();
+        panel.PairKvm = async d =>
+        {
+            var name = DropPanel.DisplayName(d);
+            if (EdgeForm.Ask(name) is not { } edge) return;
+            using var cts = new CancellationTokenSource();
+            var form = new CodeForm(name, Pairing.Code(id.Fingerprint, d.Fingerprint));
+            form.FormClosed += (_, _) => cts.Cancel();
+            form.Show();
+            var error = await Pairing.RequestAsync(id, d, edge, cts.Token);
+            if (error != null)
+            {
+                if (!form.IsDisposed) form.Close();
+                if (error != "cancelled") Notify($"Couldn't pair with {name}: {error}", true);
+                return;
+            }
+            form.SetStatus($"{name} accepted. Are the codes the same?");
+            if (!await form.Answer)
+            {
+                _ = Pairing.NotifyAsync(id, d, null);   // they accepted; undo it there
+                return;
+            }
+            if (!form.IsDisposed) form.Close();
+            Pairing.Save(d.Fingerprint, d.Alias, edge);
+            var side = edge switch { Edge.Left => "left", Edge.Right => "right", Edge.Top => "top", _ => "bottom" };
+            Notify($"Paired. Push the pointer off the {side} edge to use {name}. Ctrl+Alt+Home brings it back.", false);
+        };
+        panel.SetKvmEdge = (d, edge) =>
+        {
+            if (edge is { } e)
+            {
+                Pairing.Save(d.Fingerprint, Pairing.Find(d.Fingerprint)?.Alias ?? d.Alias, e);
+                _ = Pairing.NotifyAsync(id, d, e);
+            }
+            else
+            {
+                Pairing.Remove(d.Fingerprint);
+                _ = Pairing.NotifyAsync(id, d, null);
+                Notify($"{DropPanel.DisplayName(d)} no longer shares this mouse and keyboard", false);
+            }
+        };
+
         card.WaveBack = (fingerprint, alias) =>
         {
             if (panel.Find(fingerprint) is { } d) panel.Wave?.Invoke(d);
@@ -447,6 +500,7 @@ static class Program
         // Started from the taskbar list: give discovery a moment to find the device.
         if (sendTo != null) _ = Task.Delay(4000).ContinueWith(_ => panel.BeginInvoke(() => panel.PickAndSend(sendTo)));
         Application.Run();
+        kvm?.Dispose();
         tray.Visible = false;
         discovery.Dispose();
         server.DisposeAsync().AsTask().Wait(2000);
@@ -456,7 +510,7 @@ static class Program
     /// <summary>Whether Ctrl+Alt+S and Ctrl+Alt+Shift+S could be registered (another app may own them).</summary>
     public static (bool Clipboard, bool Screenshot) Shortcuts { get; private set; }
 
-    static (Discovery, Server) StartNetwork(Identity id)
+    internal static (Discovery, Server) StartNetwork(Identity id)
     {
         var discovery = new Discovery(id);
         var server = new Server(id, discovery);

@@ -92,6 +92,8 @@ sealed class Settings
     public List<string> Favorites { get; set; } = [];
     /// <summary>We asked once on first run; after that it's the Settings link.</summary>
     public bool ShellMenuOffered { get; set; }
+    /// <summary>PCs sharing this PC's mouse and keyboard (and the other way). Only these may send input.</summary>
+    public List<PairedPc> Paired { get; set; } = [];
     /// <summary>Fingerprints of senders accepted before.</summary>
     public List<string> Trusted { get; set; } = [];
 

@@ -59,6 +59,9 @@ sealed class DropPanel : Form
     public Action<Device>? OpenNotes, AskForFile;
     /// <summary>Device menu: wave at it.</summary>
     public Action<Device>? Wave, ShowScreen;
+    /// <summary>Mouse and keyboard: pair, or (paired) move it to another edge; null edge = unpair.</summary>
+    public Action<Device>? PairKvm;
+    public Action<Device, Edge?>? SetKvmEdge;
 
     /// <summary>Something is arriving: the little mouth brings it in. False if there's no mouth to show it.</summary>
     public bool Arrive(Image? food)
@@ -889,6 +892,18 @@ sealed class DropPanel : Form
             if (ScreenShare.Active) ScreenShare.Stop();
             else BeginInvoke(() => ShowScreen?.Invoke(d));
         });
+        if (Pairing.Find(d.Fingerprint) is { } paired)
+        {
+            var kvm = new ToolStripMenuItem("Mouse and keyboard");
+            foreach (var e in (Edge[])[Edge.Left, Edge.Right, Edge.Top, Edge.Bottom])
+                kvm.DropDownItems.Add(new ToolStripMenuItem($"It's {Pairing.Describe(e)}", null, (_, _) => SetKvmEdge?.Invoke(d, e))
+                    { Checked = paired.Edge == e });
+            kvm.DropDownItems.Add(new ToolStripSeparator());
+            kvm.DropDownItems.Add("Unpair", null, (_, _) => SetKvmEdge?.Invoke(d, null));
+            menu.Items.Add(kvm);
+        }
+        else if (d.DeviceType != "mobile")
+            menu.Items.Add("Share mouse and keyboard…", null, (_, _) => BeginInvoke(() => PairKvm?.Invoke(d)));
         menu.Items.Add(new ToolStripSeparator());
         var groups = new ToolStripMenuItem("Groups");
         for (var gi = 0; gi < s.Groups.Count; gi++)

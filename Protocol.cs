@@ -62,9 +62,12 @@ static class LsHttp
     /// Client that presents our certificate (receivers may require mTLS) and, for
     /// HTTPS peers, only talks to the certificate whose fingerprint the peer announced.
     /// </summary>
-    public static HttpClient Create(Identity id, string? expectedFingerprint, TimeSpan timeout)
+    public static HttpClient Create(Identity id, string? expectedFingerprint, TimeSpan timeout) =>
+        new(Handler(id, expectedFingerprint)) { Timeout = timeout };
+
+    public static SocketsHttpHandler Handler(Identity id, string? expectedFingerprint)
     {
-        var handler = new SocketsHttpHandler
+        return new SocketsHttpHandler
         {
             ConnectTimeout = TimeSpan.FromSeconds(5),
             SslOptions = new SslClientAuthenticationOptions
@@ -76,7 +79,6 @@ static class LsHttp
                         string.Equals(Identity.FingerprintOf(cert), expectedFingerprint, StringComparison.OrdinalIgnoreCase)),
             },
         };
-        return new HttpClient(handler) { Timeout = timeout };
     }
 
     public static string? PinFor(Device d) => d.Protocol == "https" ? d.Fingerprint : null;

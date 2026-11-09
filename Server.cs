@@ -123,6 +123,7 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
             }));
         });
         var app = builder.Build();
+        app.UseWebSockets();   // the mouse-and-keyboard link
 
         foreach (var v in new[] { "v1", "v2" })
         {
@@ -141,6 +142,10 @@ sealed class Server(Identity id, Discovery discovery) : IAsyncDisposable
         app.MapPost("/api/localsend-drop/v1/wave", (Func<HttpContext, Task<IResult>>)(ctx => Wave(ctx)));
         app.MapPost("/api/localsend-drop/v1/screen/offer", (Func<HttpContext, Task<IResult>>)(ctx => ScreenOffer(ctx)));
         app.MapGet("/api/localsend-drop/v1/screen", (Func<HttpContext, Task>)(ctx => ScreenShare.Stream(ctx)));
+        app.MapPost("/api/localsend-drop/v1/kvm/pair", (Func<HttpContext, Task<IResult>>)(ctx => Pairing.HandlePair(ctx, id)));
+        app.MapPost("/api/localsend-drop/v1/kvm/edge", (Func<HttpContext, Task<IResult>>)(ctx => Pairing.HandleEdge(ctx)));
+        app.MapPost("/api/localsend-drop/v1/kvm/unpair", (Func<HttpContext, IResult>)(ctx => Pairing.HandleUnpair(ctx)));
+        app.Map("/api/localsend-drop/v1/kvm", (Func<HttpContext, Task>)(ctx => KvmRemote.Accept(ctx)));
 
         await app.StartAsync();
         _app = app;

@@ -355,6 +355,22 @@ sealed class IncomingCard : Form
         if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
     }
 
+    public Task<bool> OnPairRequest(string alias, string code, CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _session = null;
+        Reset();
+        _title = $"Share a mouse and keyboard with {alias}?";
+        _lines = [$"Code: {code}"];
+        _caption = $"Accept only if {alias} shows the same code.";
+        Arrange("Accept", "Decline");
+        _onPrimary = () => { tcs.TrySetResult(true); Hide(); };
+        _onSecondary = _onClose = () => { tcs.TrySetResult(false); Hide(); };
+        ct.Register(() => BeginInvoke(() => { if (tcs.TrySetResult(false)) Hide(); }));
+        if (Settings.Current.Sound) System.Media.SystemSounds.Asterisk.Play();
+        return tcs.Task;
+    }
+
     public void OnWave(string alias, string fingerprint)
     {
         _session = null;
