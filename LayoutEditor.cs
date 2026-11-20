@@ -36,7 +36,7 @@ sealed class LayoutEditor : Drawn
                 zones.Add(new Zone(m.Display, t.side, (from - aStart) / (double)aLen, (to - aStart) / (double)aLen,
                     peer, p.Display, t.target, (from - bStart) / (double)bLen, (to - bStart) / (double)bLen));
             }
-        return [.. zones];
+        return KvmZones.Widen(zones);
     }
 
     /// <summary>Where the other PC's monitors sit so that <paramref name="zone"/> holds: its target monitor touches ours.</summary>

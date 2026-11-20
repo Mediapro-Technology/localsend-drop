@@ -16,16 +16,25 @@ public class LayoutEditorTests
     }
 
     [Fact]
-    public void Offset_PartialSpan()
+    public void ShorterInside_WholeEdge()
     {
-        // Peer is half as tall and sits lower: only the lower half of our right edge leads there.
+        // Peer is half as tall and sits wholly within our right edge: all of our edge leads there (T-010).
         var peer = new LayoutTile(false, 0, new Rectangle(1920, 540, 1920, 540));
         var z = Assert.Single(LayoutEditor.ZonesFrom([Mine, peer], "pc"));
         Assert.Equal(Edge.Right, z.Side);
+        Assert.Equal((0.0, 1.0, 0.0, 1.0), (z.From, z.To, z.TargetFrom, z.TargetTo));
+    }
+
+    [Fact]
+    public void Overhang_PartialSpan()
+    {
+        // Peer hangs past the bottom: only the lower half of our right edge leads to its top half.
+        var peer = new LayoutTile(false, 0, new Rectangle(1920, 540, 1920, 1080));
+        var z = Assert.Single(LayoutEditor.ZonesFrom([Mine, peer], "pc"));
         Assert.Equal(0.5, z.From, 3);
         Assert.Equal(1.0, z.To, 3);
         Assert.Equal(0.0, z.TargetFrom, 3);
-        Assert.Equal(1.0, z.TargetTo, 3);
+        Assert.Equal(0.5, z.TargetTo, 3);
     }
 
     [Fact]

@@ -158,7 +158,7 @@ sealed class Kvm : IDisposable
     internal static Zone[] ZonesFor(PairedPc pc, IEnumerable<Zone> saved, IReadOnlyList<DisplayInfo> displays)
     {
         var own = saved.Where(z => string.Equals(z.Peer, pc.Fingerprint, StringComparison.OrdinalIgnoreCase)).ToArray();
-        return own.Length > 0 ? own : [.. KvmZones.Migrate(pc, displays)];
+        return own.Length > 0 ? KvmZones.Widen(own) : [.. KvmZones.Migrate(pc, displays)];
     }
 
     /// <summary>
@@ -311,6 +311,14 @@ sealed class Kvm : IDisposable
             if (_active != link) return;   // already back: don't hide
             HiddenCursor.Hide();
             Inject.MoveTo(centre.X, centre.Y);
+        });
+        // Left at the edge, the hidden pointer would count moves away from it but not into it: say so if it didn't park.
+        _ = Task.Delay(250).ContinueWith(_ =>
+        {
+            if (_active != link) return;
+            var at = Inject.CursorPos;
+            if (Math.Abs(at.X - centre.X) + Math.Abs(at.Y - centre.Y) > 40)
+                KvmLog.Write($"the hidden pointer didn't park mid-screen (at {at}, wanted {centre})");
         });
         _ui(() =>
         {

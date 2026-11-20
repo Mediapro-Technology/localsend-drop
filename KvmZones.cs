@@ -66,6 +66,25 @@ static class KvmZones
     /// outside of the desktop on that side, leading to the matching full edge of the other PC (target
     /// monitor unknown: it uses its own outer edge).
     /// </summary>
+    /// <summary>
+    /// A screen that sits wholly within the other PC's edge, alone on that edge, takes the whole edge: a
+    /// 1080p laptop beside a 1440p monitor crosses from anywhere on it, not just where the tiles touch.
+    /// A tile hanging past an end, or sharing an edge with another, keeps its span.
+    /// </summary>
+    public static Zone[] Widen(IReadOnlyList<Zone> zones)
+    {
+        static bool Whole(double from, double to) => from <= 1e-6 && to >= 1 - 1e-6;
+        return [.. zones.Select(z =>
+        {
+            var aloneHere = zones.Count(o => o.Display == z.Display && o.Side == z.Side) == 1;
+            var aloneThere = zones.Count(o => o.TargetDisplay == z.TargetDisplay && o.TargetSide == z.TargetSide) == 1;
+            if (!aloneHere || !aloneThere) return z;
+            if (Whole(z.TargetFrom, z.TargetTo)) return z with { From = 0, To = 1 };
+            if (Whole(z.From, z.To)) return z with { TargetFrom = 0, TargetTo = 1 };
+            return z;
+        })];
+    }
+
     public static IReadOnlyList<Zone> Migrate(PairedPc pc, IReadOnlyList<DisplayInfo> displays)
     {
         if (displays.Count == 0) return [];

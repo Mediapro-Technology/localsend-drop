@@ -4,6 +4,12 @@
   "recent": [
     {
       "date": "2026-11-20",
+      "id": "T-010",
+      "title": "A smaller screen beside a bigger one uses the whole edge",
+      "notes": []
+    },
+    {
+      "date": "2026-11-20",
       "id": "T-009",
       "title": "Settings lists nearby PCs to pair with",
       "notes": []
