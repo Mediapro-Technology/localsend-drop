@@ -29,6 +29,7 @@ enum KvmMsg : byte
     Displays = 15,  // json DisplayInfo[]: this PC's monitors
     Sync = 16,      // json CrossingSettings
     Paused = 17,    // controlled PC refuses control (Beamer is running there)
+    Busy = 18,      // refused: that PC's own input is on another PC right now (one owner at a time)
 }
 
 static class KvmWire

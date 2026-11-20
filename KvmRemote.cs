@@ -35,6 +35,29 @@ static class KvmRemote
     /// <summary>A paired PC started (true) or stopped (false) using this PC's input. The admin helper only plays input in between.</summary>
     public static Action<bool>? ActiveChanged;
 
+    /// <summary>Whether this PC's own input is on another PC now (set by Kvm). Then a crossing here is refused: one owner at a time.</summary>
+    public static Func<bool> Away = () => false;
+
+    /// <summary>Another PC is controlling this one now.</summary>
+    public static bool Controlled { get { lock (Lock) return _active is { _on: true }; } }
+
+    /// <summary>
+    /// Gives the input back to the PC controlling this one (like Beamer's switch home): this PC never starts its
+    /// own crossing while it is being controlled. False when nothing is controlling it.
+    /// </summary>
+    public static bool HandBack(string why)
+    {
+        Session? s;
+        lock (Lock) s = _active;
+        if (s == null) return false;
+        lock (s)
+        {
+            if (!s._on) return false;
+            s.GiveBack(why);
+        }
+        return true;
+    }
+
     public static async Task Accept(HttpContext ctx)
     {
         if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
@@ -47,7 +70,7 @@ static class KvmRemote
 
     sealed class Session(string fingerprint, WsPipe pipe)
     {
-        bool _on;
+        internal bool _on;
         Point _pos;
         Zone[] _zones = [];            // this PC's zones facing the controller, and its monitors, read at Enter
         DisplayInfo[] _displays = [];
@@ -112,9 +135,14 @@ static class KvmRemote
 
         void Enter(double f, int? display, Edge? side)
         {
-            if (EnterRefusal(BeamerWatch.Paused, InputLocked) is { } refusal)
+            if (EnterRefusal(BeamerWatch.Paused, InputLocked, Away) is { } refusal)
             {
-                KvmLog.Write($"{Name} tried to cross over, but this PC is {(refusal == KvmMsg.Paused ? "paused (Beamer is running)" : "locked")}");
+                KvmLog.Write($"{Name} tried to cross over, but this PC is {refusal switch
+                {
+                    KvmMsg.Paused => "paused (Beamer is running)",
+                    KvmMsg.Busy => "using another PC (its own input is away)",
+                    _ => "locked",
+                }}");
                 pipe.Send(KvmWire.Simple(refusal));
                 return;
             }
@@ -297,6 +325,15 @@ static class KvmRemote
             Inject.Key(vk, scan, up, ext);
         }
 
+        /// <summary>Sends the input home to the controlling PC, from the middle of the edge facing it. Caller holds the lock.</summary>
+        public void GiveBack(string why)
+        {
+            KvmLog.Write($"gave the input back to {Name} ({why})");
+            var z = _zones.Length > 0 ? _zones[0] : null;
+            pipe.Send(z != null ? KvmWire.LeaveAt(z.Display, z.Side, 0.5) : KvmWire.Fraction(KvmMsg.Leave, 0.5));
+            Off();
+        }
+
         /// <summary>Lets go of everything still held and stops taking input. Caller holds the lock.</summary>
         public void Off()
         {
@@ -342,8 +379,8 @@ static class KvmRemote
     /// Why an Enter is refused, as the message that tells the controller to let go: Beamer is running here
     /// (sharing is paused, so it would fight over the mouse), or this PC is locked.
     /// </summary>
-    internal static KvmMsg? EnterRefusal(bool paused, Func<bool> locked) =>
-        paused ? KvmMsg.Paused : locked() ? KvmMsg.Locked : null;
+    internal static KvmMsg? EnterRefusal(bool paused, Func<bool> locked, Func<bool>? away = null) =>
+        paused ? KvmMsg.Paused : locked() ? KvmMsg.Locked : away?.Invoke() == true ? KvmMsg.Busy : null;
 
     /// <summary>The lock screen or a UAC prompt has the input; injected input can't reach it.</summary>
     static bool InputLocked()

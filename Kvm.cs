@@ -72,6 +72,7 @@ sealed class Kvm : IDisposable
         KvmLook.IsCrossed = () => CrossedOver;
         KvmLook.IsLive = fp => _links.TryGetValue(fp, out var l) && l.IsConnected;
         KvmRemote.ActiveChanged = on => (_source as HelperClient)?.SetRemoteActive(on);
+        KvmRemote.Away = () => _active != null;
         KvmLog.Write($"started; paired: {string.Join(", ", Pairing.All.Select(p => $"{p.Alias} {p.Edge}"))}");
         _beat = new System.Threading.Timer(_ => Beat(), null, 250, 250);
         _ = Task.Run(async () =>
@@ -280,6 +281,12 @@ sealed class Kvm : IDisposable
     void OnCrossed(Zone zone, Point p)
     {
         var source = _source;
+        if (KvmRemote.Controlled)
+        {
+            // Another PC is driving this one: one owner at a time, so no crossing of our own.
+            source.Free();
+            return;
+        }
         var link = LinkFor(zone.Peer);
         var fraction = KvmWire.Along(zone.Side, p, DisplayBounds(zone.Display));
         var at = KvmZones.Target(zone, fraction);
@@ -340,6 +347,8 @@ sealed class Kvm : IDisposable
     /// </summary>
     void OnShortcut()
     {
+        // Being controlled: the shortcut sends the input home to that PC, never a crossing of our own.
+        if (KvmRemote.HandBack("shortcut")) return;
         if (_active != null) { Release(BackPoint(), null, "shortcut"); return; }
         var zones = Pairing.All.Where(p => LinkFor(p.Fingerprint) != null).SelectMany(ZonesFor).ToList();
         if (zones.Count == 0) return;
@@ -398,6 +407,9 @@ sealed class Kvm : IDisposable
                 break;
             case KvmMsg.Locked when _active == link:
                 Release(BackPoint(), $"{link.Name} is locked. Unlock it with its own keyboard.", "they're locked");
+                break;
+            case KvmMsg.Busy when _active == link:
+                Release(BackPoint(), $"{link.Name} is using this PC's mouse and keyboard right now.", "they're busy");
                 break;
             case KvmMsg.Paused when _active == link:
                 Release(BackPoint(), $"Sharing is paused on {link.Name}: Beamer is running there.", "they're paused");
