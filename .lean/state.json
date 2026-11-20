@@ -4,6 +4,14 @@
   "recent": [
     {
       "date": "2026-11-20",
+      "id": "T-006",
+      "title": "Edge glow, arrival effect, idle pointer hides",
+      "notes": [
+        "20261120-131004"
+      ]
+    },
+    {
+      "date": "2026-11-20",
       "id": "T-002",
       "title": "Sharing pauses while Beamer runs",
       "notes": [
