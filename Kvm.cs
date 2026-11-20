@@ -45,8 +45,7 @@ sealed class Kvm : IDisposable
         new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true });
     long _lastHeard;
     Point _crossedAt;
-    Edge _crossedEdge;
-
+    Zone? _crossedZone;               // the zone we crossed through: the pointer comes back through it
     public Kvm(Identity id, Discovery discovery, Action<Action> ui, Action<string, bool> notify)
     {
         _id = id;
@@ -63,6 +62,9 @@ sealed class Kvm : IDisposable
         _source = Wire(new InputEngine());
         Sync();
         Pairing.Changed += Sync;
+        KvmSync.SettingsChanged += UpdateEdges;   // a new layout or option, here or from the other PC
+        KvmLook.IsCrossed = () => CrossedOver;
+        KvmLook.IsLive = fp => _links.TryGetValue(fp, out var l) && l.IsConnected;
         KvmRemote.ActiveChanged = on => (_source as HelperClient)?.SetRemoteActive(on);
         KvmLog.Write($"started; paired: {string.Join(", ", Pairing.All.Select(p => $"{p.Alias} {p.Edge}"))}");
         _beat = new System.Threading.Timer(_ => Beat(), null, 250, 250);
@@ -80,6 +82,7 @@ sealed class Kvm : IDisposable
     IInputSource Wire(IInputSource s)
     {
         s.Crossed += OnCrossed;
+        s.Wake += OnWake;
         s.Forward += m => { if (_active is { } l) l.Send(m); else s.Free(); };
         s.Emergency += () => Release(BackPoint(), null, "Ctrl+Alt+Home");
         s.Stray += OnStray;
@@ -136,14 +139,57 @@ sealed class Kvm : IDisposable
         _ = Task.Delay(10_000).ContinueWith(_ => { if (_wantHelper && _source is not HelperClient) UseHelper(true); });
     }
 
-    /// <summary>Tells the input source which edges have a connected paired PC.</summary>
+    /// <summary>
+    /// The zones that lead to a paired PC: the saved layout, or for a pairing without one (made before
+    /// layouts existed) a full-span zone on the outer edge it was paired on.
+    /// </summary>
+    internal static Zone[] ZonesFor(PairedPc pc)
+    {
+        var own = Settings.Current.Zones.Where(z => string.Equals(z.Peer, pc.Fingerprint, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return own.Length > 0 ? own : [.. KvmZones.Migrate(pc, KvmZones.Current())];
+    }
+
+    /// <summary>Tells the input source which zones lead to a connected paired PC and which to an offline one.</summary>
     void UpdateEdges()
     {
-        var mask = 0;
+        var live = new List<Zone>();
+        var offline = new List<Zone>();
         foreach (var p in Pairing.All)
-            if (_links.TryGetValue(p.Fingerprint, out var l) && l.IsConnected) mask |= 1 << (int)p.Edge;
-        _source.SetEdges(mask);
+            (_links.TryGetValue(p.Fingerprint, out var l) && l.IsConnected ? live : offline).AddRange(ZonesFor(p));
+        _source.SetZones([.. live], [.. offline]);
     }
+
+    /// <summary>Pushed into an offline PC's zone (at most once per 30 s): send it a Wake-on-LAN packet.</summary>
+    void OnWake(Zone zone)
+    {
+        var pc = Pairing.Find(zone.Peer);
+        if (pc == null) return;
+        var name = Settings.Current.Nicknames.GetValueOrDefault(pc.Fingerprint) ?? pc.Alias;
+        KvmLog.Write(WakeOnLan.Send(pc.Mac)
+            ? $"wake packet sent to {name} ({pc.Mac})"
+            : $"wanted to wake {name}, but its hardware address isn't known yet (it is learnt while linked)");
+    }
+
+    /// <summary>A link came up: remember the PC's hardware address, so it can be woken when it's off.</summary>
+    void LearnMac(KvmLink link)
+    {
+        var pc = Pairing.Find(link.Fingerprint);
+        var device = _discovery.Devices.FirstOrDefault(d => string.Equals(d.Fingerprint, link.Fingerprint, StringComparison.OrdinalIgnoreCase));
+        if (pc == null || device == null || !System.Net.IPAddress.TryParse(device.Ip, out var ip)) return;
+        var mac = WakeOnLan.LearnMac(ip);
+        if (mac == "" || mac == pc.Mac) return;
+        _ui(() => { pc.Mac = mac; Settings.Current.Save(); KvmLog.Write($"learnt the hardware address of {pc.Alias}: {mac}"); });
+    }
+
+    /// <summary>This PC's monitor <paramref name="index"/>, or the whole desktop if it's gone.</summary>
+    static Rectangle DisplayBounds(int index)
+    {
+        var all = KvmZones.Current();
+        return all.FirstOrDefault(d => d.Index == index)?.Bounds ?? Inject.Desktop;
+    }
+
+    KvmLink? LinkFor(string fingerprint) =>
+        _links.TryGetValue(fingerprint, out var l) && l.IsConnected ? l : null;
 
     /// <summary>Whether input is going to another PC right now.</summary>
     public bool CrossedOver => _active != null;
@@ -171,32 +217,37 @@ sealed class Kvm : IDisposable
                 if (_active == l) Release(BackPoint(), $"Lost the connection to {l.Name}", "link dropped");
                 UpdateEdges();
             };
-            link.Connected += l => { KvmLog.Write($"link to {l.Name} connected"); KvmSync.Hello(l.Send); UpdateEdges(); };
+            link.Connected += l =>
+            {
+                KvmLog.Write($"link to {l.Name} connected");
+                KvmSync.Hello(l.Send);
+                UpdateEdges();
+                _ = Task.Run(() => LearnMac(l));
+            };
             _links[fp] = link;
         }
         UpdateEdges();
     }
 
-    KvmLink? LinkOn(Edge e)
-    {
-        var p = Pairing.All.FirstOrDefault(x => x.Edge == e);
-        return p != null && _links.TryGetValue(p.Fingerprint, out var l) && l.IsConnected ? l : null;
-    }
-
     // ---- the input source (any thread) ----
 
-    void OnCrossed(Edge edge, Point p)
+    void OnCrossed(Zone zone, Point p)
     {
         var source = _source;
-        var link = LinkOn(edge);
-        var desk = Inject.Desktop;
-        if (link == null || !link.Send(KvmWire.Fraction(KvmMsg.Enter, KvmWire.Along(edge, p, desk)))) { source.Free(); return; }
+        var link = LinkFor(zone.Peer);
+        var fraction = KvmWire.Along(zone.Side, p, DisplayBounds(zone.Display));
+        var at = KvmZones.Target(zone, fraction);
+        // A peer that has told us its monitors understands EnterAt; an older one only gets Enter.
+        var enter = KvmSync.PeerDisplays.ContainsKey(zone.Peer)
+            ? KvmWire.EnterAt(zone.TargetDisplay, zone.TargetSide, at)
+            : KvmWire.Fraction(KvmMsg.Enter, at);
+        if (link == null || !link.Send(enter)) { source.Free(); return; }
         _crossedAt = p;
-        _crossedEdge = edge;
+        _crossedZone = zone;
         Volatile.Write(ref _lastHeard, Environment.TickCount64);
         _active = link;
-        KvmLog.Write($"crossed to {link.Name} over {edge} at {p}{(source is HelperClient ? " (admin helper)" : "")}");
-        if (_carry is { } carry && _carryEdge == edge)
+        KvmLog.Write($"crossed to {link.Name} over {zone.Side} of display {zone.Display} at {p}{(source is HelperClient ? " (admin helper)" : "")}");
+        if (_carry is { } carry && _carryEdge == zone.Side)
         {
             // Carrying a file drag over: they start their own drag of it; ours is cancelled with Esc
             // (the button stays held, and now drives the drag there).
@@ -247,7 +298,7 @@ sealed class Kvm : IDisposable
         switch ((KvmMsg)m[0])
         {
             case KvmMsg.Leave when _active == link:
-                Release(KvmWire.OnEdge(link.Edge, KvmWire.ReadFraction(m), Inject.Desktop, ReturnInset), null, "came back over the edge");
+                Release(ReturnPoint(KvmWire.ReadFraction(m)), null, "came back over the edge");
                 if (_cameBack is { } back)
                 {
                     // Our files' drag came back over the edge, button still held: it carries on here.
@@ -300,17 +351,18 @@ sealed class Kvm : IDisposable
     {
         if (_active != null || _incoming != null || !LeftHeld()) { _strip.Away(); return; }
         var p = Cursor.Position;
-        var desk = Inject.Desktop;
-        foreach (var pc in Pairing.All)
+        var displays = KvmZones.Current();
+        var live = Pairing.All.Where(pc => LinkFor(pc.Fingerprint) != null).SelectMany(ZonesFor).ToList();
+        if (KvmZones.Hit(live, displays, p) is { } zone
+            && displays.FirstOrDefault(d => d.Index == zone.Display) is { } display
+            && !KvmZones.InCorner(p, display.Bounds, Math.Max(30, Math.Min(display.Bounds.Width, display.Bounds.Height) * 3 / 100)))
         {
-            if (!_links.TryGetValue(pc.Fingerprint, out var l) || !l.IsConnected) continue;
-            if (!KvmWire.AtEdge(pc.Edge, p, desk) || KvmWire.NearCorner(pc.Edge, p, desk)) continue;
-            _strip.ShowOn(pc.Edge, desk);
+            _strip.ShowOn(zone.Side, display.Bounds);
             if (_strip.Holding is { } held && _strip.HeldFor >= 150)
             {
-                _carryEdge = pc.Edge;
+                _carryEdge = zone.Side;
                 _carry = held;
-                _source.Cross(pc.Edge, p);
+                _source.Cross(zone, p);
             }
             return;
         }
@@ -365,10 +417,15 @@ sealed class Kvm : IDisposable
         });
     }
 
-    Point BackPoint()
+    /// <summary>Where the pointer comes back: where it left, or (they sent <paramref name="theirFraction"/>) through the zone it crossed.</summary>
+    Point BackPoint() => ReturnPoint(null);
+
+    Point ReturnPoint(double? theirFraction)
     {
-        var desk = Inject.Desktop;
-        return KvmWire.OnEdge(_crossedEdge, KvmWire.Along(_crossedEdge, _crossedAt, desk), desk, ReturnInset);
+        if (_crossedZone is not { } zone) return Inject.CursorPos;
+        var d = DisplayBounds(zone.Display);
+        var fraction = theirFraction is { } f ? CrossingRule.Return(zone, f) : KvmWire.Along(zone.Side, _crossedAt, d);
+        return KvmWire.OnEdge(zone.Side, fraction, d, ReturnInset);
     }
 
     void Release(Point at, string? why, string cause)
@@ -419,6 +476,9 @@ sealed class Kvm : IDisposable
     public void Dispose()
     {
         Pairing.Changed -= Sync;
+        KvmSync.SettingsChanged -= UpdateEdges;
+        KvmLook.IsCrossed = () => false;
+        KvmLook.IsLive = fp => Pairing.All.Any(p => string.Equals(p.Fingerprint, fp, StringComparison.OrdinalIgnoreCase));
         _beat.Dispose();
         TakeBack();
         _pointer.Writer.TryComplete();

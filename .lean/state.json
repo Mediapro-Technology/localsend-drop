@@ -4,6 +4,15 @@
   "recent": [
     {
       "date": "2026-11-20",
+      "id": "T-003",
+      "title": "Crossing follows the screen layout",
+      "notes": [
+        "20261120-131334",
+        "20261120-131334-2"
+      ]
+    },
+    {
+      "date": "2026-11-20",
       "id": "T-005",
       "title": "Arrange screens and options, same on both",
       "notes": [

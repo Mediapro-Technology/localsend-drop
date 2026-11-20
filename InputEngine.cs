@@ -10,8 +10,10 @@ namespace LocalSendDrop;
 /// </summary>
 interface IInputSource : IDisposable
 {
-    /// <summary>The pointer rested against a live edge; the source is already holding input back.</summary>
-    event Action<Edge, Point>? Crossed;
+    /// <summary>The pointer pushed through a live zone; the source is already holding input back.</summary>
+    event Action<Zone, Point>? Crossed;
+    /// <summary>The pointer pushed into the zone of an offline PC (rate limited): wake it.</summary>
+    event Action<Zone>? Wake;
     /// <summary>A Move, Mouse or Key message for the other PC.</summary>
     event Action<byte[]>? Forward;
     /// <summary>Ctrl+Alt+Home; the source already let go.</summary>
@@ -19,12 +21,12 @@ interface IInputSource : IDisposable
     /// <summary>Input got past the hook (now, expected, slowest callback ms); the source let go and put in a fresh hook.</summary>
     event Action<Point, Point, double>? Stray;
 
-    /// <summary>Which edges have a paired PC that's connected (bit per <see cref="Edge"/>).</summary>
-    void SetEdges(int mask);
+    /// <summary>The zones that lead to a connected paired PC, and those that lead to an offline one.</summary>
+    void SetZones(Zone[] live, Zone[] offline);
     /// <summary>Stop holding input back: control is on this PC.</summary>
     void Free();
     /// <summary>Cross over now (a file drag reached the edge: the button is held, so resting doesn't count).</summary>
-    void Cross(Edge edge, Point p);
+    void Cross(Zone zone, Point p);
     /// <summary>Keep the next left-button release from this PC and raise <see cref="LeftUpHeld"/> instead.</summary>
     void HoldLeftUp(bool on);
     /// <summary>The held release happened; play it later with Inject.Button(LeftUp).</summary>
@@ -38,9 +40,8 @@ interface IInputSource : IDisposable
 /// </summary>
 sealed class InputEngine : IInputSource
 {
-    const int ResistanceMs = 150;     // rest against the edge this long before crossing
-
-    public event Action<Edge, Point>? Crossed;
+    public event Action<Zone, Point>? Crossed;
+    public event Action<Zone>? Wake;
     public event Action<byte[]>? Forward;
     public event Action? Emergency;
     public event Action<Point, Point, double>? Stray;
@@ -50,16 +51,17 @@ sealed class InputEngine : IInputSource
     volatile bool _holdUp;
     readonly System.Threading.Timer _watch;
     volatile bool _captured;
-    volatile int _edges;
+    volatile ZoneSet _zones = new([], []);
+    volatile CrossingSettings _rules = new();
+    DisplayInfo[] _displays = [];
     long _capturedTicks;
     int _strayChecks;
     Point _last;                      // where the (hidden) pointer really is while crossed over
     // Hook thread only:
     readonly HashSet<ushort> _localDown = [];
     readonly HashSet<ushort> _remoteDown = [];
-    int _buttonsDown;
-    Edge? _restingOn;
-    long _restingSince;
+    CrossState _cross = new();
+    Point _lastPoint;                 // the previous pointer position while free
 
     public InputEngine()
     {
@@ -73,7 +75,15 @@ sealed class InputEngine : IInputSource
 
     InputHook NewHook() => new() { OnMouse = OnMouse, OnKey = OnKey };
 
-    public void SetEdges(int mask) => _edges = mask;
+    public void SetZones(Zone[] live, Zone[] offline) => SetZones(live, offline, null);
+
+    /// <summary>Also sets the crossing options (the admin helper gets them from the app); null reads this process's settings.</summary>
+    public void SetZones(Zone[] live, Zone[] offline, CrossingSettings? rules)
+    {
+        _rules = rules ?? Settings.Current.Crossing;
+        try { _displays = KvmZones.Current(); } catch { }
+        _zones = new ZoneSet(live, offline);
+    }
 
     public void Free()
     {
@@ -81,29 +91,31 @@ sealed class InputEngine : IInputSource
         lock (_remoteDown) _remoteDown.Clear();
     }
 
-    public void Cross(Edge edge, Point p)
+    public void Cross(Zone zone, Point p)
     {
         if (_captured) return;
-        Capture(edge, p);
+        Capture(zone, p);
     }
 
     public void HoldLeftUp(bool on) => _holdUp = on;
 
-    void Capture(Edge edge, Point p)
+    void Capture(Zone zone, Point p)
     {
-        _restingOn = null;
+        _cross = _cross with { Pinned = null, Overshoot = 0 };
         lock (_remoteDown) _remoteDown.Clear();
         _last = p;
         _capturedTicks = Stopwatch.GetTimestamp();
         _strayChecks = 0;
         _captured = true;
-        Crossed?.Invoke(edge, p);
+        Crossed?.Invoke(zone, p);
     }
 
     void CountButtons(MouseKind k)
     {
-        if (k is MouseKind.LeftDown or MouseKind.RightDown or MouseKind.MiddleDown or MouseKind.XDown) _buttonsDown++;
-        else if (k is MouseKind.LeftUp or MouseKind.RightUp or MouseKind.MiddleUp or MouseKind.XUp) _buttonsDown = Math.Max(0, _buttonsDown - 1);
+        var n = _cross.Buttons;
+        if (k is MouseKind.LeftDown or MouseKind.RightDown or MouseKind.MiddleDown or MouseKind.XDown) n++;
+        else if (k is MouseKind.LeftUp or MouseKind.RightUp or MouseKind.MiddleUp or MouseKind.XUp) n = Math.Max(0, n - 1);
+        _cross = _cross with { Buttons = n };
     }
 
     // ---- hook thread ----
@@ -140,20 +152,24 @@ sealed class InputEngine : IInputSource
 
     void CheckEdge(Point p)
     {
-        var edges = _edges;
-        if (_buttonsDown > 0 || edges == 0) { _restingOn = null; return; }
-        var desk = Inject.Desktop;
-        Edge? at = null;
-        foreach (var e in (Edge[])[Edge.Left, Edge.Right, Edge.Top, Edge.Bottom])
-            if ((edges & (1 << (int)e)) != 0 && KvmWire.AtEdge(e, p, desk) && !NearCorner(e, p, desk)) { at = e; break; }
-        if (at == null) { _restingOn = null; return; }
-        var now = Stopwatch.GetTimestamp();
-        if (_restingOn != at) { _restingOn = at; _restingSince = now; return; }
-        if (Stopwatch.GetElapsedTime(_restingSince, now).TotalMilliseconds < ResistanceMs) return;
-        Capture(at.Value, p);
+        var zones = _zones;
+        var delta = new Point(p.X - _lastPoint.X, p.Y - _lastPoint.Y);
+        _lastPoint = p;
+        if (zones.Live.Count == 0 && zones.Offline.Count == 0) { _cross = _cross with { Pinned = null, Overshoot = 0 }; return; }
+        // Windows clamps the pointer at the screen edge, so a push shows as moves that go nowhere:
+        // count each as a pixel outward, so the resistance still adds up.
+        if (delta == Point.Empty && _cross.Pinned is { } pinned) delta = Step1(pinned.Side);
+        var now = Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency;
+        var (state, cross, wake) = CrossingRule.Step(_cross, p, delta, zones, _displays, _rules, now);
+        _cross = state;
+        if (wake != null) Wake?.Invoke(wake);
+        if (cross != null) Capture(cross, p);
     }
 
-    static bool NearCorner(Edge e, Point p, Rectangle d) => KvmWire.NearCorner(e, p, d);
+    static Point Step1(Edge side) => side switch
+    {
+        Edge.Left => new Point(-1, 0), Edge.Right => new Point(1, 0), Edge.Top => new Point(0, -1), _ => new Point(0, 1),
+    };
 
     bool OnKey(KeyEvent e)
     {

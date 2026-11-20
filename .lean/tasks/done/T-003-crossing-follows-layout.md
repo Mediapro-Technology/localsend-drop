@@ -2,10 +2,11 @@
 id: T-003
 title: Crossing follows the screen layout
 spec: S-001
-status: doing
+status: done
 depends: [T-001]
 files: [Kvm.cs, InputEngine.cs, KvmRemote.cs, AdminHelper.cs, CrossingRule.cs, tests/LocalSendDrop.Tests/CrossingTests.cs]
 tdd: strict
+done: 2026-11-20
 ---
 ## Goal
 Crossing uses per-display zones with spans, push resistance, corners and the notch, and wakes an offline PC when you push into its zone. Covers A3, A4, A5 (runtime), A6, A12, A13. One card despite 6 criteria: it is all the one edge-check path in InputEngine/Kvm, and splitting it would make cards that edit the same files.

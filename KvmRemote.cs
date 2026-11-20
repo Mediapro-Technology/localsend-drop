@@ -50,6 +50,8 @@ static class KvmRemote
     {
         bool _on;
         Point _pos;
+        Zone[] _zones = [];            // this PC's zones facing the controller, and its monitors, read at Enter
+        DisplayInfo[] _displays = [];
         long _enteredAt;
         int _push;
         KvmDrag.Staging? _incoming;   // their files, being dragged here
@@ -81,6 +83,7 @@ static class KvmRemote
                 switch ((KvmMsg)m[0])
                 {
                     case KvmMsg.Enter: Enter(KvmWire.ReadFraction(m)); break;
+                    case KvmMsg.EnterAt when KvmWire.ReadEnterAt(m) is { } at: EnterAt(at.display, at.side, at.fraction); break;
                     case KvmMsg.Move when _on && m.Length >= 5:
                         Move(BitConverter.ToInt16(m, 1), BitConverter.ToInt16(m, 3));
                         break;
@@ -100,7 +103,15 @@ static class KvmRemote
             }
         }
 
-        void Enter(double f)
+        /// <summary>This PC's zones that face the controlling PC (its saved layout, or the old one-edge pairing).</summary>
+        Zone[] Zones() => Pairing.Find(fingerprint) is { } pc ? Kvm.ZonesFor(pc) : [];
+
+        void Enter(double f) => Enter(f, null, null);
+
+        /// <summary>Entered at a given monitor's edge (an older peer sends only a fraction, along the old edge).</summary>
+        void EnterAt(int display, Edge side, double f) => Enter(f, display, side);
+
+        void Enter(double f, int? display, Edge? side)
         {
             if (InputLocked()) { KvmLog.Write($"{Name} tried to cross over, but this PC is locked"); pipe.Send(KvmWire.Simple(KvmMsg.Locked)); return; }
             KvmLog.Write($"{Name} crossed over");
@@ -113,8 +124,23 @@ static class KvmRemote
             _on = true;
             _enteredAt = Environment.TickCount64;
             _push = 0;
-            _pos = KvmWire.OnEdge(Facing, f, Inject.Desktop, 1);
+            var displays = _displays = KvmZones.Current();
+            _zones = Zones();
+            if (display is { } di && side is { } sd)
+            {
+                // The monitor asked for, or the first one if it's gone since.
+                var d = displays.FirstOrDefault(x => x.Index == di) ?? displays.FirstOrDefault();
+                _pos = d == null ? KvmWire.OnEdge(sd, f, Inject.Desktop, 1) : KvmWire.OnEdge(sd, f, d.Bounds, 1);
+            }
+            else
+            {
+                // Plain Enter: along the edge of the monitor the old edge pairing leads to.
+                var d = _zones.FirstOrDefault(z => z.Side == Facing) is { } z0 ? displays.FirstOrDefault(x => x.Index == z0.Display) : null;
+                _pos = KvmWire.OnEdge(Facing, f, d?.Bounds ?? Inject.Desktop, 1);
+            }
             Inject.MoveTo(_pos.X, _pos.Y);
+            var arrived = _pos;
+            Ui(() => KvmZones.RaiseArrived(arrived));
         }
 
         void Move(int dx, int dy)
@@ -122,15 +148,23 @@ static class KvmRemote
             var desk = Inject.Desktop;
             var next = new Point(_pos.X + dx, _pos.Y + dy);
             var leftHeld = _buttons.Contains((MouseKind.LeftDown, 0));
-            if (KvmWire.Past(Facing, next, desk))
+            // Going back goes through a zone that faces the controlling PC: on the edge of its monitor,
+            // inside its span, and not an inner edge between this PC's own monitors.
+            var displays = _displays;
+            var here = displays.FirstOrDefault(d => d.Bounds.Contains(_pos)) ?? displays.FirstOrDefault();
+            var pinned = here == null ? next : new Point(
+                Math.Clamp(next.X, here.Bounds.Left, here.Bounds.Right - 1), Math.Clamp(next.Y, here.Bounds.Top, here.Bounds.Bottom - 1));
+            var leave = KvmZones.Hit(_zones, displays, pinned);
+            var outward = leave == null ? 0 : CrossingRule.Outward(leave.Side, new Point(next.X - pinned.X, next.Y - pinned.Y));
+            if (leave != null && here != null && outward > 0)
             {
                 // Push against the edge to go back, like crossing over: a wobble isn't enough.
-                if (Environment.TickCount64 - _enteredAt > GraceMs) _push += Overshoot(Facing, next, desk);
+                if (Environment.TickCount64 - _enteredAt > GraceMs) _push += outward;
                 var holding = leftHeld && _incoming == null ? StripHolding() : null;
                 var needed = leftHeld && _incoming == null && holding == null ? DragPush : LeavePush;
                 if (_push >= needed)
                 {
-                    var fraction = KvmWire.Along(Facing, _pos, desk);
+                    var fraction = KvmWire.Along(leave.Side, pinned, here.Bounds);
                     if (_incoming is { } back)
                     {
                         // Their files' drag going back: it carries on there.
@@ -161,7 +195,6 @@ static class KvmRemote
                     Ui(() => { if (Clip.ForSync() is { } clip) pipe.Send(clip); });
                     return;
                 }
-                next = new Point(Math.Clamp(next.X, desk.Left, desk.Right - 1), Math.Clamp(next.Y, desk.Top, desk.Bottom - 1));
             }
             else _push = 0;
             // Stay on a monitor: the desktop's bounding box can have gaps.
@@ -173,11 +206,17 @@ static class KvmRemote
             _pos = next;
             Inject.MoveTo(_pos.X, _pos.Y);
             // A drag (button held) at the edge facing them: put the strip there to catch files.
-            var strip = leftHeld && _incoming == null && KvmWire.AtEdge(Facing, _pos, desk);
+            var stripZone = leftHeld && _incoming == null ? KvmZones.Hit(_zones, displays, _pos) : null;
+            var strip = stripZone != null;
             if (strip != _stripShown)
             {
                 _stripShown = strip;
-                if (strip) StripShow(Facing, desk); else StripAway();
+                if (strip)
+                {
+                    var bounds = displays.FirstOrDefault(d => d.Index == stripZone!.Display)?.Bounds ?? desk;
+                    StripShow(stripZone!.Side, bounds);
+                }
+                else StripAway();
             }
         }
 
@@ -375,6 +414,12 @@ static class KvmTest
             pipe.Send(KvmWire.Move(80, 0));
             Thread.Sleep(100);
             Check(Near(Inject.CursorPos, quiet), "after 1 s of silence it stops taking input");
+
+            var first = KvmZones.Current()[0].Bounds;
+            pipe.Send(KvmWire.EnterAt(0, Edge.Left, 0.25));
+            Thread.Sleep(150);
+            var enteredAt = KvmWire.OnEdge(Edge.Left, 0.25, first, 1);
+            Check(Near(Inject.CursorPos, enteredAt), $"EnterAt puts the pointer on display 0's left edge ({enteredAt}, got {Inject.CursorPos})");
 
             ws.Abort();
             run.Wait(2000);
