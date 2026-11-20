@@ -45,7 +45,9 @@ sealed class Kvm : IDisposable
         new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true });
     long _lastHeard;
     Point _crossedAt;
-    Zone? _crossedZone;               // the zone we crossed through: the pointer comes back through it
+    string _lastPeer = "";            // the PC last crossed to, for the shortcut
+    int _lastTargetDisplay;
+    Zone? _crossedZone;              // the zone we crossed through: the pointer comes back through it
     public Kvm(Identity id, Discovery discovery, Action<Action> ui, Action<string, bool> notify)
     {
         _id = id;
@@ -86,6 +88,7 @@ sealed class Kvm : IDisposable
         s.Forward += m => { if (_active is { } l) l.Send(m); else s.Free(); };
         s.Emergency += () => Release(BackPoint(), null, "Ctrl+Alt+Home");
         s.Stray += OnStray;
+        s.Shortcut += OnShortcut;
         s.LeftUpHeld += OnLeftUpHeld;
         return s;
     }
@@ -244,6 +247,8 @@ sealed class Kvm : IDisposable
         if (link == null || !link.Send(enter)) { source.Free(); return; }
         _crossedAt = p;
         _crossedZone = zone;
+        _lastPeer = zone.Peer;
+        _lastTargetDisplay = zone.TargetDisplay;
         Volatile.Write(ref _lastHeard, Environment.TickCount64);
         _active = link;
         KvmLog.Write($"crossed to {link.Name} over {zone.Side} of display {zone.Display} at {p}{(source is HelperClient ? " (admin helper)" : "")}");
@@ -278,6 +283,26 @@ sealed class Kvm : IDisposable
             }
             if (Clip.ForSync() is { } clip) link.Send(clip);
         });
+    }
+
+    /// <summary>
+    /// Double-tap of right Ctrl. Crossed over: come back here. Otherwise go to the last PC used (else
+    /// the first connected one), arriving in the middle of the monitor we were last on over there.
+    /// </summary>
+    void OnShortcut()
+    {
+        if (_active != null) { Release(BackPoint(), null, "shortcut"); return; }
+        var zones = Pairing.All.Where(p => LinkFor(p.Fingerprint) != null).SelectMany(ZonesFor).ToList();
+        if (zones.Count == 0) return;
+        var peer = zones.Any(z => z.Peer == _lastPeer) ? _lastPeer : zones[0].Peer;
+        var mine = zones.Where(z => z.Peer == peer).ToList();
+        var zone = mine.FirstOrDefault(z => z.TargetDisplay == _lastTargetDisplay) ?? mine[0];
+        // The zone's own monitor, and the point on it whose place along the edge maps to the middle of the target.
+        var bounds = DisplayBounds(zone.Display);
+        var f = zone.TargetTo == zone.TargetFrom ? (zone.From + zone.To) / 2
+            : Math.Clamp(zone.From + (0.5 - zone.TargetFrom) / (zone.TargetTo - zone.TargetFrom) * (zone.To - zone.From), Math.Min(zone.From, zone.To), Math.Max(zone.From, zone.To));
+        var at = KvmWire.OnEdge(zone.Side, f, bounds, 1);
+        _source.Cross(zone, at);
     }
 
     void OnStray(Point now, Point expected, double slowest)

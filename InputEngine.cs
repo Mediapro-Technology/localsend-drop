@@ -31,6 +31,8 @@ interface IInputSource : IDisposable
     void HoldLeftUp(bool on);
     /// <summary>The held release happened; play it later with Inject.Button(LeftUp).</summary>
     event Action? LeftUpHeld;
+    /// <summary>The switch shortcut (double-tap right Ctrl) was pressed, here or while crossed over.</summary>
+    event Action? Shortcut;
 }
 
 /// <summary>
@@ -46,6 +48,7 @@ sealed class InputEngine : IInputSource
     public event Action? Emergency;
     public event Action<Point, Point, double>? Stray;
     public event Action? LeftUpHeld;
+    public event Action? Shortcut;
 
     InputHook _hook;
     volatile bool _holdUp;
@@ -61,6 +64,8 @@ sealed class InputEngine : IInputSource
     readonly HashSet<ushort> _localDown = [];
     readonly HashSet<ushort> _remoteDown = [];
     CrossState _cross = new();
+    readonly DoubleTap _tap = new(300);
+    readonly PointerScaler _scaler = new();   // mouse hook thread
     Point _lastPoint;                 // the previous pointer position while free
 
     public InputEngine()
@@ -130,7 +135,16 @@ sealed class InputEngine : IInputSource
             if (e.Kind == MouseKind.Move)
             {
                 int dx = p.X - _last.X, dy = p.Y - _last.Y;
-                if (dx != 0 || dy != 0) Forward?.Invoke(KvmWire.Move(dx, dy));
+                if (dx != 0 || dy != 0)
+                {
+                    (dx, dy) = _scaler.Scale(dx, dy, _rules.PointerSpeed.Value);
+                    if (dx != 0 || dy != 0) Forward?.Invoke(KvmWire.Move(dx, dy));
+                }
+            }
+            else if (e.Kind is MouseKind.Wheel or MouseKind.HWheel)
+            {
+                var wheel = _scaler.Wheel(e.Data, _rules.ScrollSpeed.Value, _rules.ReverseScroll.Value, e.Kind == MouseKind.HWheel);
+                if (wheel != 0) Forward?.Invoke(KvmWire.Mouse(e.Kind, wheel));
             }
             else Forward?.Invoke(KvmWire.Mouse(e.Kind, e.Data));
             return true;
@@ -174,9 +188,16 @@ sealed class InputEngine : IInputSource
     bool OnKey(KeyEvent e)
     {
         if (e.Injected) return false;
+        var tapped = false;
+        if (_rules.Shortcut.Value == "RightCtrl")
+        {
+            _tap.WindowMs = _rules.DoubleTapMs.Value;
+            tapped = _tap.Feed(e.Vk, e.Up, Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency);
+        }
         if (!_captured)
         {
             if (e.Up) _localDown.Remove(e.Vk); else _localDown.Add(e.Vk);
+            if (tapped) { _tap.Reset(); Shortcut?.Invoke(); }
             return false;
         }
 
@@ -194,7 +215,8 @@ sealed class InputEngine : IInputSource
             return true;
         }
         lock (_remoteDown) { if (e.Up) _remoteDown.Remove(e.Vk); else _remoteDown.Add(e.Vk); }
-        Forward?.Invoke(KvmWire.Key(e));
+        Forward?.Invoke(KvmWire.Key(e));   // media and volume keys go through like any other
+        if (tapped) { _tap.Reset(); Shortcut?.Invoke(); }   // the key is already let go over there, so nothing sticks
         return true;
     }
 

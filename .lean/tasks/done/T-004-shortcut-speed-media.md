@@ -2,10 +2,11 @@
 id: T-004
 title: Switch PCs with a shortcut, set speeds
 spec: S-001
-status: todo
+status: done
 depends: [T-003]
 files: [InputEngine.cs, Kvm.cs, InputShaping.cs, tests/LocalSendDrop.Tests/ShortcutTests.cs]
 tdd: strict
+done: 2026-11-20
 ---
 ## Goal
 Double-tap right Ctrl goes to the last PC (A2); pointer/scroll speed and reverse scroll apply on the other PC (A11); media keys act on the PC with the pointer (A10). Waits on T-003 only because both edit InputEngine.cs and Kvm.cs; kept separate from T-003 because together they would be well over 400 changed lines.

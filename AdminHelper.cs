@@ -28,7 +28,7 @@ static class AdminHelper
     // main -> helper
     const byte SetZones = 1, Free = 2, MoveTo = 3, Button = 4, Key = 5, RemoteActive = 6, CrossNow = 7, Hold = 8;
     // helper -> main
-    const byte Crossed = 20, Forward = 21, Emergency = 22, Stray = 23, Ready = 24, UpHeld = 25, Wake = 26;
+    const byte Crossed = 20, Forward = 21, Emergency = 22, Stray = 23, Ready = 24, UpHeld = 25, Wake = 26, Shortcut = 27;
 
     /// <summary>What SetZones carries (JSON): the zones, and the crossing options the helper can't read from the app.</summary>
     internal record ZonesFrame(Zone[] Live, Zone[] Offline, CrossingSettings Rules);
@@ -121,6 +121,7 @@ static class AdminHelper
         engine.Crossed += (z, p) => Send(Frame(Crossed, [.. Ints(p.X, p.Y), .. Json(z)]));
         engine.Wake += z => Send(Frame(Wake, Json(z)));
         engine.Forward += m => Send(Frame(Forward, m));
+        engine.Shortcut += () => Send(Frame(Shortcut));
         engine.Emergency += () => { freedAt = Environment.TickCount64; Send(Frame(Emergency)); };
         engine.Stray += (now, expected, slowest) =>
         {
@@ -358,6 +359,7 @@ static class AdminHelper
             case Wake when f.Length >= 2 && FromJson<Zone>(f, 1) is { } wz: c.OnWake(wz); break;
             case Forward when f.Length >= 2: c.OnForward(f[1..]); break;
             case Emergency: c.OnEmergency(); break;
+            case Shortcut: c.OnShortcut(); break;
             case UpHeld: c.OnUpHeld(); break;
             case Stray when f.Length >= 21: c.OnStray(new Point(Int(f, 1), Int(f, 5)), new Point(Int(f, 9), Int(f, 13)), Int(f, 17) / 1000.0); break;
         }
@@ -378,6 +380,7 @@ sealed class HelperClient : IInputSource, IInjector
     public event Action? Emergency;
     public event Action<Point, Point, double>? Stray;
     public event Action? LeftUpHeld;
+    public event Action? Shortcut;
     /// <summary>The helper went away (it exits if it's stopped or the pipe breaks).</summary>
     public event Action? Lost;
 
@@ -402,6 +405,7 @@ sealed class HelperClient : IInputSource, IInjector
     internal void OnForward(byte[] m) => Forward?.Invoke(m);
     internal void OnEmergency() => Emergency?.Invoke();
     internal void OnUpHeld() => LeftUpHeld?.Invoke();
+    internal void OnShortcut() => Shortcut?.Invoke();
     internal void OnStray(Point now, Point expected, double slowest) => Stray?.Invoke(now, expected, slowest);
 
     bool Send(byte[] frame)
