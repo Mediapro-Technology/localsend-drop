@@ -72,7 +72,7 @@ sealed class Kvm : IDisposable
         KvmLook.IsCrossed = () => CrossedOver;
         KvmLook.IsLive = fp => _links.TryGetValue(fp, out var l) && l.IsConnected;
         KvmRemote.ActiveChanged = on => (_source as HelperClient)?.SetRemoteActive(on);
-        KvmRemote.Away = () => _active != null;
+        KvmRemote.Away = () => _active != null || Volatile.Read(ref _crossing);   // from before our Enter goes out
         KvmLog.Write($"started; paired: {string.Join(", ", Pairing.All.Select(p => $"{p.Alias} {p.Edge}"))}");
         _beat = new System.Threading.Timer(_ => Beat(), null, 250, 250);
         _ = Task.Run(async () =>
@@ -278,12 +278,15 @@ sealed class Kvm : IDisposable
 
     // ---- the input source (any thread) ----
 
+    bool _crossing;   // an Enter of ours is on its way
+
     void OnCrossed(Zone zone, Point p)
     {
         var source = _source;
         if (KvmRemote.Controlled)
         {
             // Another PC is driving this one: one owner at a time, so no crossing of our own.
+            _carry = null;
             source.Free();
             return;
         }
@@ -292,13 +295,19 @@ sealed class Kvm : IDisposable
         var at = KvmZones.Target(zone, fraction);
         // A peer that has told us its monitors understands EnterAt; an older one only gets Enter.
         var enter = EnterMessage(zone, at, KvmSync.PeerDisplays.ContainsKey(zone.Peer));
-        if (link == null || !link.Send(enter)) { source.Free(); return; }
-        _crossedAt = p;
-        _crossedZone = zone;
-        _lastPeer = zone.Peer;
-        _lastTargetDisplay = zone.TargetDisplay;
-        Volatile.Write(ref _lastHeard, Environment.TickCount64);
-        _active = link;
+        // Claimed before the Enter goes out, so a crossing coming the other way meanwhile is refused (busy).
+        Volatile.Write(ref _crossing, true);
+        try
+        {
+            if (link == null || !link.Send(enter)) { source.Free(); return; }
+            _crossedAt = p;
+            _crossedZone = zone;
+            _lastPeer = zone.Peer;
+            _lastTargetDisplay = zone.TargetDisplay;
+            Volatile.Write(ref _lastHeard, Environment.TickCount64);   // before _active, so the watchdog never sees a stale time
+            _active = link;
+        }
+        finally { Volatile.Write(ref _crossing, false); }
         KvmLog.Write($"crossed to {link.Name} over {zone.Side} of display {zone.Display} at {p}{(source is HelperClient ? " (admin helper)" : "")}");
         if (_carry is { } carry && _carryEdge == zone.Side)
         {
@@ -409,7 +418,7 @@ sealed class Kvm : IDisposable
                 Release(BackPoint(), $"{link.Name} is locked. Unlock it with its own keyboard.", "they're locked");
                 break;
             case KvmMsg.Busy when _active == link:
-                Release(BackPoint(), $"{link.Name} is using this PC's mouse and keyboard right now.", "they're busy");
+                Release(BackPoint(), $"{link.Name}'s mouse and keyboard are on another PC right now.", "they're busy");
                 break;
             case KvmMsg.Paused when _active == link:
                 Release(BackPoint(), $"Sharing is paused on {link.Name}: Beamer is running there.", "they're paused");
@@ -439,7 +448,7 @@ sealed class Kvm : IDisposable
     /// <summary>UI thread, every 40 ms: a file drag resting on a shared edge crosses over with its files.</summary>
     void DragWatch()
     {
-        if (_active != null || _incoming != null || !LeftHeld()) { _strip.Away(); return; }
+        if (KvmRemote.Controlled || _active != null || _incoming != null || !LeftHeld()) { _strip.Away(); return; }
         var p = Cursor.Position;
         var displays = KvmZones.Current();
         var live = Pairing.All.Where(pc => LinkFor(pc.Fingerprint) != null).SelectMany(ZonesFor).ToList();

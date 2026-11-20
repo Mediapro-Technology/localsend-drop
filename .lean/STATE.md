@@ -1,13 +1,13 @@
 # STATE — localsend-drop
-Focus: All cards · 14/14 done · all cards done — next: /lean:review, then /lean:grill the next phase
+Focus: All cards · 15/15 done · all cards done — next: /lean:review, then /lean:grill the next phase
 Now: —
 Ready: —
 Recent:
+  - 2026-11-20 T-015 
   - 2026-11-20 T-014  @225e3db
   - 2026-11-20 T-013  @9f443ae
   - 2026-11-20 T-012  @73be8e9
   - 2026-11-20 T-011 Going back needs a real push, not a wobble @50f0b04
-  - 2026-11-20 T-010 A smaller screen beside a bigger one uses the whole edge @034799f
 Last review: 4e0d91b
 Last security review: 225e3db (2026-11-20)
 

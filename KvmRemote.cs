@@ -332,6 +332,7 @@ static class KvmRemote
             var z = _zones.Length > 0 ? _zones[0] : null;
             pipe.Send(z != null ? KvmWire.LeaveAt(z.Display, z.Side, 0.5) : KvmWire.Fraction(KvmMsg.Leave, 0.5));
             Off();
+            Ui(() => { if (Clip.ForSync() is { } clip) pipe.Send(clip); });   // what was copied here goes home too, as over the edge
         }
 
         /// <summary>Lets go of everything still held and stops taking input. Caller holds the lock.</summary>
