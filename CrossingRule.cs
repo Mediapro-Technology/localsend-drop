@@ -89,3 +89,32 @@ static class CrossingRule
         return Math.Clamp(zone.From + t * (zone.To - zone.From), 0, 1);
     }
 }
+
+/// <summary>
+/// When the pointer on the controlled PC goes back: a real push against the edge facing the controlling PC,
+/// not a wobble. Until it has moved a few px from where it arrived (or a moment passed), pushing only holds it;
+/// after that the push adds up, leaks away over time and is taken off by moving back inward.
+/// </summary>
+sealed class ReturnPush
+{
+    public const int GraceMs = 300, GracePx = 4, LeakPxPerSec = 300;
+    double _push;
+    long _last, _arrived;
+    bool _settled;
+
+    public void Arrive(long now) { _push = 0; _last = _arrived = now; _settled = false; }
+
+    /// <summary>One move: px pushed outward against the edge, px moved inward, px from the arrival point. True: go back now.</summary>
+    public bool Step(int outward, int inward, int moved, long now, int needed)
+    {
+        _push = Math.Max(0, _push - Math.Max(0, now - _last) * LeakPxPerSec / 1000.0);
+        _last = now;
+        if (!_settled && (now - _arrived >= GraceMs || moved >= GracePx)) _settled = true;
+        _push = Math.Max(0, _push - inward);
+        if (outward <= 0 || !_settled) return false;
+        _push += outward;
+        if (_push < needed) return false;
+        _push = 0;
+        return true;
+    }
+}

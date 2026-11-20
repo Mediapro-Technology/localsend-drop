@@ -12,8 +12,7 @@ namespace LocalSendDrop;
 static class KvmRemote
 {
     const int TimeoutMs = 1000;
-    const int GraceMs = 300;     // just arrived: a wobble back doesn't count
-    const int LeavePush = 40;    // px pushed against the facing edge before going back
+    const int LeavePush = 40;    // px pushed against the facing edge before going back, at the least (else the crossing resistance)
     const int DragPush = 240;    // carrying a file drag: more, so the strip has caught it first
 
     /// <summary>Runs work on the UI thread (clipboard).</summary>
@@ -52,8 +51,8 @@ static class KvmRemote
         Point _pos;
         Zone[] _zones = [];            // this PC's zones facing the controller, and its monitors, read at Enter
         DisplayInfo[] _displays = [];
-        long _enteredAt;
-        int _push;
+        readonly ReturnPush _back = new();
+        Point _arrivedAt;
         KvmDrag.Staging? _incoming;   // their files, being dragged here
         bool _dropWaiting;            // let go over a drop; played once the files are here
         bool _stripShown;
@@ -127,8 +126,7 @@ static class KvmRemote
             }
             ActiveChanged?.Invoke(true);
             _on = true;
-            _enteredAt = Environment.TickCount64;
-            _push = 0;
+            _back.Arrive(Environment.TickCount64);
             var displays = _displays = KvmZones.Current();
             _zones = Zones();
             if (display is { } di && side is { } sd)
@@ -144,6 +142,7 @@ static class KvmRemote
                 _pos = KvmWire.OnEdge(Facing, f, d?.Bounds ?? Inject.Desktop, 1);
             }
             Inject.MoveTo(_pos.X, _pos.Y);
+            _arrivedAt = _pos;
             var arrived = _pos;
             Ui(() => KvmZones.RaiseArrived(arrived));
         }
@@ -161,13 +160,17 @@ static class KvmRemote
                 Math.Clamp(next.X, here.Bounds.Left, here.Bounds.Right - 1), Math.Clamp(next.Y, here.Bounds.Top, here.Bounds.Bottom - 1));
             var leave = KvmZones.Hit(_zones, displays, pinned);
             var outward = leave == null ? 0 : CrossingRule.Outward(leave.Side, new Point(next.X - pinned.X, next.Y - pinned.Y));
+            // Push against the edge to go back, like crossing over: a wobble, or the hand still moving from the crossing, isn't enough.
+            var face = leave?.Side ?? (_zones.Length > 0 ? _zones[0].Side : (Edge?)null);
+            var inward = face is { } f ? CrossingRule.Outward(Pairing.Opposite(f), new Point(dx, dy)) : 0;
+            var moved = Math.Abs(next.X - _arrivedAt.X) + Math.Abs(next.Y - _arrivedAt.Y);
+            var holding = leave != null && leftHeld && _incoming == null ? StripHolding() : null;
+            var needed = leave != null && leftHeld && _incoming == null && holding == null
+                ? DragPush : Math.Max(LeavePush, Settings.Current.Crossing.ResistancePx.Value);
+            var goBack = _back.Step(here != null ? outward : 0, inward, moved, Environment.TickCount64, needed);
             if (leave != null && here != null && outward > 0)
             {
-                // Push against the edge to go back, like crossing over: a wobble isn't enough.
-                if (Environment.TickCount64 - _enteredAt > GraceMs) _push += outward;
-                var holding = leftHeld && _incoming == null ? StripHolding() : null;
-                var needed = leftHeld && _incoming == null && holding == null ? DragPush : LeavePush;
-                if (_push >= needed)
+                if (goBack)
                 {
                     var fraction = KvmWire.Along(leave.Side, pinned, here.Bounds);
                     if (_incoming is { } back)
@@ -201,7 +204,6 @@ static class KvmRemote
                     return;
                 }
             }
-            else _push = 0;
             // Stay on a monitor: the desktop's bounding box can have gaps.
             if (!Screen.AllScreens.Any(s => s.Bounds.Contains(next)))
             {
@@ -411,6 +413,8 @@ static class KvmTest
             Check(Next(KvmMsg.Leave, 200) == null, "a small wobble past the edge doesn't send it back");
             Thread.Sleep(300);
             pipe.Send(KvmWire.Move(-60, 0));
+            Check(Next(KvmMsg.Leave, 200) == null, "less than the crossing resistance doesn't send it back");
+            pipe.Send(KvmWire.Move(-130, 0));
             var leave = Next(KvmMsg.Leave, 1000);
             Check(leave != null && Math.Abs(KvmWire.ReadFraction(leave) - 0.5) < 0.01, "pushing past the facing edge sends Leave at the same height");
 

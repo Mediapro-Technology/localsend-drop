@@ -2,10 +2,11 @@
 id: T-011
 title: Going back needs a real push, not a wobble
 spec: S-001
-status: doing
+status: done
 depends: []
 files: [CrossingRule.cs, KvmRemote.cs, Kvm.cs, tests/LocalSendDrop.Tests/ReturnPushTests.cs]
 tdd: strict
+done: 2026-11-20
 ---
 ## Goal
 Bug found by hand: crossings to DEV_PC came straight back after 0.31 s (the 300 ms grace, then 40 px of
