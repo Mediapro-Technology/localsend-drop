@@ -2,10 +2,11 @@
 id: T-005
 title: Arrange screens and options, same on both
 spec: S-001
-status: doing
+status: done
 depends: [T-001]
 files: [LayoutEditor.cs, KvmSync.cs, SettingsForm.cs, tests/LocalSendDrop.Tests/KvmSyncTests.cs, tests/LocalSendDrop.Tests/LayoutEditorTests.cs]
 tdd: strict
+done: 2026-11-20
 ---
 ## Goal
 Settings gets a Mouse and keyboard section: a layout editor showing both PCs' monitors to scale (A5), the crossing options, and changes that reach the paired PC within 2 s with the newer change winning (A7).

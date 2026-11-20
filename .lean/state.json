@@ -4,6 +4,16 @@
   "recent": [
     {
       "date": "2026-11-20",
+      "id": "T-005",
+      "title": "Arrange screens and options, same on both",
+      "notes": [
+        "20261120-131048",
+        "20261120-131048-2",
+        "20261120-131048-3"
+      ]
+    },
+    {
+      "date": "2026-11-20",
       "id": "T-006",
       "title": "Edge glow, arrival effect, idle pointer hides",
       "notes": [

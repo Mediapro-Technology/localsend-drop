@@ -1,9 +1,10 @@
 # STATE — localsend-drop
-Focus: S-001 One mouse and keyboard across PCs, without Beamer · 3/6 done · now: T-003, T-005
-Now: T-003 Crossing follows the screen layout; T-005 Arrange screens and options, same on both
+Focus: S-001 One mouse and keyboard across PCs, without Beamer · 4/6 done · now: T-003
+Now: T-003 Crossing follows the screen layout
 Ready: — · waiting on deps: 1
 Recent:
-  - 2026-11-20 T-006 Edge glow, arrival effect, idle pointer hides zk:20261120-131004
+  - 2026-11-20 T-005 Arrange screens and options, same on both zk:20261120-131048,20261120-131048-2,20261120-131048-3
+  - 2026-11-20 T-006 Edge glow, arrival effect, idle pointer hides @1a5326a zk:20261120-131004
   - 2026-11-20 T-002 Sharing pauses while Beamer runs @65af7f8 zk:20261120-130831
   - 2026-11-20 T-001 Groundwork for layout, sync and tests @082ae79 zk:20261120-130720,20261120-130720-2
 
