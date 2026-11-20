@@ -26,9 +26,20 @@ static class AdminHelper
     public const string TaskName = "LocalSend Drop input helper";
 
     // main -> helper
-    const byte SetEdges = 1, Free = 2, MoveTo = 3, Button = 4, Key = 5, RemoteActive = 6, CrossNow = 7, Hold = 8;
+    const byte SetZones = 1, Free = 2, MoveTo = 3, Button = 4, Key = 5, RemoteActive = 6, CrossNow = 7, Hold = 8;
     // helper -> main
-    const byte Crossed = 20, Forward = 21, Emergency = 22, Stray = 23, Ready = 24, UpHeld = 25;
+    const byte Crossed = 20, Forward = 21, Emergency = 22, Stray = 23, Ready = 24, UpHeld = 25, Wake = 26;
+
+    /// <summary>What SetZones carries (JSON): the zones, and the crossing options the helper can't read from the app.</summary>
+    internal record ZonesFrame(Zone[] Live, Zone[] Offline, CrossingSettings Rules);
+
+    static T? FromJson<T>(byte[] f, int from)
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<T>(f.AsSpan(from)); }
+        catch (System.Text.Json.JsonException) { return default; }
+    }
+
+    static byte[] Json(object o) => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(o);
 
     static string PipeName =>
         $"LocalSendDrop.input.{Process.GetCurrentProcess().SessionId}.{WindowsIdentity.GetCurrent().User!.Value}";
@@ -107,7 +118,8 @@ static class AdminHelper
         // (or a drop of files from there is waiting to be played).
         bool MayInject() => remoteActive || engine.Captured || upHeld || Environment.TickCount64 - freedAt < 3000;
 
-        engine.Crossed += (e, p) => Send(Frame(Crossed, [(byte)e, .. Ints(p.X, p.Y)]));
+        engine.Crossed += (z, p) => Send(Frame(Crossed, [.. Ints(p.X, p.Y), .. Json(z)]));
+        engine.Wake += z => Send(Frame(Wake, Json(z)));
         engine.Forward += m => Send(Frame(Forward, m));
         engine.Emergency += () => { freedAt = Environment.TickCount64; Send(Frame(Emergency)); };
         engine.Stray += (now, expected, slowest) =>
@@ -123,10 +135,10 @@ static class AdminHelper
         {
             switch (f[0])
             {
-                case SetEdges when f.Length >= 2: engine.SetEdges(f[1]); break;
+                case SetZones when FromJson<ZonesFrame>(f, 1) is { } zf: engine.SetZones(zf.Live, zf.Offline, zf.Rules); break;
                 case Free: engine.Free(); freedAt = Environment.TickCount64; break;
                 case RemoteActive when f.Length >= 2: remoteActive = f[1] != 0; break;
-                case CrossNow when f.Length >= 10: engine.Cross((Edge)f[1], new Point(Int(f, 2), Int(f, 6))); break;
+                case CrossNow when f.Length >= 10 && FromJson<Zone>(f, 9) is { } zone: engine.Cross(zone, new Point(Int(f, 1), Int(f, 5))); break;
                 case Hold when f.Length >= 2: engine.HoldLeftUp(f[1] != 0); break;
                 case MoveTo when f.Length >= 9 && MayInject(): Inject.MoveTo(Int(f, 1), Int(f, 5)); break;
                 case Button when f.Length >= 6 && MayInject():
@@ -320,10 +332,11 @@ static class AdminHelper
 
     // ---- the client, as an input source and an injector ----
 
-    internal static byte[] FrameSetEdges(int mask) => Frame(SetEdges, [(byte)mask]);
+    internal static byte[] FrameSetZones(Zone[] live, Zone[] offline, CrossingSettings rules) =>
+        Frame(SetZones, Json(new ZonesFrame(live, offline, rules)));
     internal static byte[] FrameFree() => Frame(Free);
     internal static byte[] FrameRemoteActive(bool on) => Frame(RemoteActive, [(byte)(on ? 1 : 0)]);
-    internal static byte[] FrameCross(Edge e, Point p) => Frame(CrossNow, [(byte)e, .. Ints(p.X, p.Y)]);
+    internal static byte[] FrameCross(Zone z, Point p) => Frame(CrossNow, [.. Ints(p.X, p.Y), .. Json(z)]);
     internal static byte[] FrameHold(bool on) => Frame(Hold, [(byte)(on ? 1 : 0)]);
     internal static byte[] FrameMoveTo(int x, int y) => Frame(MoveTo, Ints(x, y));
     internal static byte[] FrameButton(MouseKind k, int data) => Frame(Button, [(byte)k, .. Ints(data)]);
@@ -341,7 +354,8 @@ static class AdminHelper
     {
         switch (f[0])
         {
-            case Crossed when f.Length >= 10: c.OnCrossed((Edge)f[1], new Point(Int(f, 2), Int(f, 6))); break;
+            case Crossed when f.Length >= 10 && FromJson<Zone>(f, 9) is { } z: c.OnCrossed(z, new Point(Int(f, 1), Int(f, 5))); break;
+            case Wake when f.Length >= 2 && FromJson<Zone>(f, 1) is { } wz: c.OnWake(wz); break;
             case Forward when f.Length >= 2: c.OnForward(f[1..]); break;
             case Emergency: c.OnEmergency(); break;
             case UpHeld: c.OnUpHeld(); break;
@@ -358,7 +372,8 @@ sealed class HelperClient : IInputSource, IInjector
     readonly CancellationTokenSource _cts = new();
     volatile bool _lost;
 
-    public event Action<Edge, Point>? Crossed;
+    public event Action<Zone, Point>? Crossed;
+    public event Action<Zone>? Wake;
     public event Action<byte[]>? Forward;
     public event Action? Emergency;
     public event Action<Point, Point, double>? Stray;
@@ -382,7 +397,8 @@ sealed class HelperClient : IInputSource, IInjector
 
     public bool Connected => !_lost;
 
-    internal void OnCrossed(Edge e, Point p) => Crossed?.Invoke(e, p);
+    internal void OnCrossed(Zone z, Point p) => Crossed?.Invoke(z, p);
+    internal void OnWake(Zone z) => Wake?.Invoke(z);
     internal void OnForward(byte[] m) => Forward?.Invoke(m);
     internal void OnEmergency() => Emergency?.Invoke();
     internal void OnUpHeld() => LeftUpHeld?.Invoke();
@@ -407,10 +423,10 @@ sealed class HelperClient : IInputSource, IInjector
         Lost?.Invoke();
     }
 
-    public void SetEdges(int mask) => Send(AdminHelper.FrameSetEdges(mask));
+    public void SetZones(Zone[] live, Zone[] offline) => Send(AdminHelper.FrameSetZones(live, offline, Settings.Current.Crossing));
     public void Free() => Send(AdminHelper.FrameFree());
     public void SetRemoteActive(bool on) => Send(AdminHelper.FrameRemoteActive(on));
-    public void Cross(Edge edge, Point p) => Send(AdminHelper.FrameCross(edge, p));
+    public void Cross(Zone zone, Point p) => Send(AdminHelper.FrameCross(zone, p));
     public void HoldLeftUp(bool on) => Send(AdminHelper.FrameHold(on));
 
     public bool MoveTo(int x, int y) => Send(AdminHelper.FrameMoveTo(x, y));
