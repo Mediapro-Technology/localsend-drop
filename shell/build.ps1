@@ -9,6 +9,7 @@
 param(
     [Parameter(Mandatory)][string]$Version,
     [switch]$RebuildDll,
+    [switch]$NewSigningKey,
     [string]$SigningDir = "D:\Tools\LocalSendDrop-signing"
 )
 $ErrorActionPreference = "Stop"
@@ -52,6 +53,9 @@ if ($LASTEXITCODE -ne 0) { $out | Write-Host; throw "makeappx failed" }
 # 3. Sign with the self-made "CN=Mediapro Technology" certificate (created on first run)
 $pfx = Join-Path $SigningDir "signing.pfx"
 $pwFile = Join-Path $SigningDir "password.txt"
+if (-not (Test-Path $pfx) -and -not $NewSigningKey) {
+    throw "No signing key at $pfx. Copy signing.pfx and password.txt from the release PC; a new key makes every installed copy refuse the update. (-NewSigningKey only for a deliberate key change.)"
+}
 if (-not (Test-Path $pfx)) {
     New-Item -ItemType Directory -Force $SigningDir | Out-Null
     $bytes = New-Object byte[] 24
