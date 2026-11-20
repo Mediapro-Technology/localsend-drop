@@ -28,6 +28,7 @@ enum KvmMsg : byte
     EnterAt = 14,   // u8 display, u8 side (Edge), u16 fraction along that edge of that display (Enter stays for older peers)
     Displays = 15,  // json DisplayInfo[]: this PC's monitors
     Sync = 16,      // json CrossingSettings
+    Paused = 17,    // controlled PC refuses control (Beamer is running there)
 }
 
 static class KvmWire
@@ -58,6 +59,26 @@ static class KvmWire
         m.Length >= 5 && m[2] <= (byte)Edge.Bottom
             ? (m[1], (Edge)m[2], BinaryPrimitives.ReadUInt16LittleEndian(m[3..]) / 65535.0)
             : null;
+
+    /// <summary>
+    /// Leave with the monitor and side it left through, after the fraction (so an older controller, which
+    /// reads only the fraction, still understands it).
+    /// </summary>
+    public static byte[] LeaveAt(int display, Edge side, double f)
+    {
+        var m = new byte[5];
+        m[0] = (byte)KvmMsg.Leave;
+        BinaryPrimitives.WriteUInt16LittleEndian(m.AsSpan(1), (ushort)Math.Round(Math.Clamp(f, 0, 1) * 65535));
+        m[3] = (byte)display;
+        m[4] = (byte)side;
+        return m;
+    }
+
+    /// <summary>Leave in either form; display and side are null in the old one.</summary>
+    public static (double fraction, int? display, Edge? side) ReadLeave(ReadOnlySpan<byte> m) =>
+        m.Length >= 5 && m[4] <= (byte)Edge.Bottom
+            ? (ReadFraction(m), m[3], (Edge)m[4])
+            : (ReadFraction(m), null, null);
 
     public static byte[] JsonMsg(KvmMsg t, object payload) =>
         WithPayload(t, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload));

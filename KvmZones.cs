@@ -58,9 +58,13 @@ static class KvmZones
         return Math.Clamp(zone.TargetFrom + t * (zone.TargetTo - zone.TargetFrom), 0, 1);
     }
 
+    /// <summary>A zone's <c>TargetDisplay</c> when the other PC's monitors aren't known: it picks its own outer edge (plain Enter).</summary>
+    public const int UnknownDisplay = -1;
+
     /// <summary>
     /// The old one-edge-per-PC pairing as zones: a full-span zone on every monitor whose edge is on the
-    /// outside of the desktop on that side, leading to the matching full edge of the other PC.
+    /// outside of the desktop on that side, leading to the matching full edge of the other PC (target
+    /// monitor unknown: it uses its own outer edge).
     /// </summary>
     public static IReadOnlyList<Zone> Migrate(PairedPc pc, IReadOnlyList<DisplayInfo> displays)
     {
@@ -74,7 +78,7 @@ static class KvmZones
         };
         var best = displays.Max(Outer);
         return [.. displays.Where(d => Outer(d) == best).Select(d =>
-            new Zone(d.Index, pc.Edge, 0, 1, pc.Fingerprint, 0, Pairing.Opposite(pc.Edge), 0, 1))];
+            new Zone(d.Index, pc.Edge, 0, 1, pc.Fingerprint, UnknownDisplay, Pairing.Opposite(pc.Edge), 0, 1))];
     }
 
     /// <summary>Whether <paramref name="p"/> is within <paramref name="size"/> px of a corner of <paramref name="d"/>.</summary>

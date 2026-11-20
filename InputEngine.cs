@@ -55,7 +55,10 @@ sealed class InputEngine : IInputSource
     readonly System.Threading.Timer _watch;
     volatile bool _captured;
     volatile ZoneSet _zones = new([], []);
-    volatile CrossingSettings _rules = new();
+    // The options the admin helper was given (it can't read the app's settings); null here: read them live,
+    // so a change made in Settings applies at once.
+    volatile CrossingSettings? _givenRules;
+    CrossingSettings _rules => _givenRules ?? Settings.Current.Crossing;
     DisplayInfo[] _displays = [];
     long _capturedTicks;
     int _strayChecks;
@@ -85,7 +88,7 @@ sealed class InputEngine : IInputSource
     /// <summary>Also sets the crossing options (the admin helper gets them from the app); null reads this process's settings.</summary>
     public void SetZones(Zone[] live, Zone[] offline, CrossingSettings? rules)
     {
-        _rules = rules ?? Settings.Current.Crossing;
+        _givenRules = rules;
         try { _displays = KvmZones.Current(); } catch { }
         _zones = new ZoneSet(live, offline);
     }
@@ -94,6 +97,7 @@ sealed class InputEngine : IInputSource
     {
         _captured = false;
         lock (_remoteDown) _remoteDown.Clear();
+        try { _lastPoint = Inject.CursorPos; } catch { }   // the next real move starts from where the pointer is now
     }
 
     public void Cross(Zone zone, Point p)
@@ -109,6 +113,7 @@ sealed class InputEngine : IInputSource
         _cross = _cross with { Pinned = null, Overshoot = 0 };
         lock (_remoteDown) _remoteDown.Clear();
         _last = p;
+        _lastPoint = p;
         _capturedTicks = Stopwatch.GetTimestamp();
         _strayChecks = 0;
         _captured = true;
@@ -150,7 +155,13 @@ sealed class InputEngine : IInputSource
             return true;
         }
 
-        if (e.Injected) return false;
+        if (e.Injected)
+        {
+            // Our own moves (coming back from the other PC, a drag) put the pointer somewhere new: that is
+            // where the next real move starts from, not where it was before.
+            if (e.Kind == MouseKind.Move) _lastPoint = new Point(e.X, e.Y);
+            return false;
+        }
         if (e.Kind == MouseKind.LeftUp && _holdUp)
         {
             // A drop of files still on their way: it's played once they've arrived.
@@ -167,17 +178,29 @@ sealed class InputEngine : IInputSource
     void CheckEdge(Point p)
     {
         var zones = _zones;
-        var delta = new Point(p.X - _lastPoint.X, p.Y - _lastPoint.Y);
+        var delta = StepDelta(_lastPoint, p, _cross.Pinned?.Side);
         _lastPoint = p;
         if (zones.Live.Count == 0 && zones.Offline.Count == 0) { _cross = _cross with { Pinned = null, Overshoot = 0 }; return; }
-        // Windows clamps the pointer at the screen edge, so a push shows as moves that go nowhere:
-        // count each as a pixel outward, so the resistance still adds up.
-        if (delta == Point.Empty && _cross.Pinned is { } pinned) delta = Step1(pinned.Side);
         var now = Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency;
         var (state, cross, wake) = CrossingRule.Step(_cross, p, delta, zones, _displays, _rules, now);
         _cross = state;
         if (wake != null) Wake?.Invoke(wake);
         if (cross != null) Capture(cross, p);
+    }
+
+    /// <summary>The most one pointer event can count as movement: a jump (a warp, a stale previous point) isn't a push.</summary>
+    const int MaxStep = 50;
+
+    /// <summary>
+    /// How far the pointer moved since <paramref name="last"/>, capped per event to real movement. Windows clamps
+    /// the pointer at the screen edge, so a push shows as moves that go nowhere: while pinned on an edge
+    /// each such move counts as a pixel outward, so the resistance still adds up.
+    /// </summary>
+    internal static Point StepDelta(Point last, Point p, Edge? pinned)
+    {
+        var delta = new Point(Math.Clamp(p.X - last.X, -MaxStep, MaxStep), Math.Clamp(p.Y - last.Y, -MaxStep, MaxStep));
+        if (delta == Point.Empty && pinned is { } side) delta = Step1(side);
+        return delta;
     }
 
     static Point Step1(Edge side) => side switch

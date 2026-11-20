@@ -40,6 +40,8 @@ sealed class Kvm : IDisposable
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, KvmLink> _links = new(StringComparer.OrdinalIgnoreCase);
 
     volatile KvmLink? _active;
+    // What each link registered with KvmSync while it is up, so it can be taken out when the link drops.
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, IDisposable> _hellos = new(StringComparer.OrdinalIgnoreCase);
     // Hiding and showing the pointer run in order on one worker, never in parallel.
     readonly System.Threading.Channels.Channel<Action> _pointer = System.Threading.Channels.Channel.CreateUnbounded<Action>(
         new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true });
@@ -64,7 +66,8 @@ sealed class Kvm : IDisposable
         _source = Wire(new InputEngine());
         Sync();
         Pairing.Changed += Sync;
-        KvmSync.SettingsChanged += UpdateEdges;   // a new layout or option, here or from the other PC
+        KvmSync.SettingsChanged += UpdateEdges;   // a new layout or option from the other PC
+        KvmSync.LocalChanged += UpdateEdges;      // ... or one made here: apply it now
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaysChanged;
         KvmLook.IsCrossed = () => CrossedOver;
         KvmLook.IsLive = fp => _links.TryGetValue(fp, out var l) && l.IsConnected;
@@ -147,10 +150,34 @@ sealed class Kvm : IDisposable
     /// The zones that lead to a paired PC: the saved layout, or for a pairing without one (made before
     /// layouts existed) a full-span zone on the outer edge it was paired on.
     /// </summary>
-    internal static Zone[] ZonesFor(PairedPc pc)
+    internal static Zone[] ZonesFor(PairedPc pc) => ZonesFor(pc, Settings.Current.Zones, KvmZones.Current());
+
+    internal static Zone[] ZonesFor(PairedPc pc, IEnumerable<Zone> saved, IReadOnlyList<DisplayInfo> displays)
     {
-        var own = Settings.Current.Zones.Where(z => string.Equals(z.Peer, pc.Fingerprint, StringComparison.OrdinalIgnoreCase)).ToArray();
-        return own.Length > 0 ? own : [.. KvmZones.Migrate(pc, KvmZones.Current())];
+        var own = saved.Where(z => string.Equals(z.Peer, pc.Fingerprint, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return own.Length > 0 ? own : [.. KvmZones.Migrate(pc, displays)];
+    }
+
+    /// <summary>
+    /// What to send on crossing through <paramref name="zone"/>: the monitor and side it leads to, if
+    /// the zone knows them and the peer understands that; else a plain fraction (the peer uses its own outer edge).
+    /// </summary>
+    internal static byte[] EnterMessage(Zone zone, double at, bool peerKnown) =>
+        peerKnown && zone.TargetDisplay >= 0
+            ? KvmWire.EnterAt(zone.TargetDisplay, zone.TargetSide, at)
+            : KvmWire.Fraction(KvmMsg.Enter, at);
+
+    /// <summary>
+    /// The zone the pointer comes back through: of the PC's zones, the one that leads to the monitor and side
+    /// it left by (the one whose span holds <paramref name="fraction"/>, if several do); else the zone it crossed through.
+    /// </summary>
+    internal static Zone ZoneForLeave(IEnumerable<Zone> zones, Zone crossed, int? display, Edge? side, double fraction)
+    {
+        if (display is not { } di || side is not { } sd) return crossed;
+        var fits = zones.Where(z => z.Peer == crossed.Peer && z.TargetDisplay == di && z.TargetSide == sd).ToList();
+        if (fits.Count == 0) return crossed;
+        return fits.FirstOrDefault(z => fraction >= Math.Min(z.TargetFrom, z.TargetTo) && fraction <= Math.Max(z.TargetFrom, z.TargetTo))
+            ?? fits.OrderBy(z => Math.Min(Math.Abs(fraction - z.TargetFrom), Math.Abs(fraction - z.TargetTo))).First();
     }
 
     /// <summary>Tells the input source which zones lead to a connected paired PC and which to an offline one.</summary>
@@ -218,6 +245,7 @@ sealed class Kvm : IDisposable
         {
             if (_active == _links[gone]) TakeBack();
             if (_links.TryRemove(gone, out var old)) old.Dispose();
+            if (_hellos.TryRemove(gone, out var hello)) hello.Dispose();
         }
         foreach (var fp in paired.Where(fp => !_links.ContainsKey(fp)))
         {
@@ -227,13 +255,15 @@ sealed class Kvm : IDisposable
             link.Dropped += l =>
             {
                 KvmLog.Write($"link to {l.Name} dropped");
+                if (_hellos.TryRemove(l.Fingerprint, out var hello)) hello.Dispose();
                 if (_active == l) Release(BackPoint(), $"Lost the connection to {l.Name}", "link dropped");
                 UpdateEdges();
             };
             link.Connected += l =>
             {
                 KvmLog.Write($"link to {l.Name} connected");
-                KvmSync.Hello(l.Send);
+                if (_hellos.TryRemove(l.Fingerprint, out var previous)) previous.Dispose();
+                _hellos[l.Fingerprint] = KvmSync.Hello(l.Send);
                 UpdateEdges();
                 _ = Task.Run(() => LearnMac(l));
             };
@@ -251,9 +281,7 @@ sealed class Kvm : IDisposable
         var fraction = KvmWire.Along(zone.Side, p, DisplayBounds(zone.Display));
         var at = KvmZones.Target(zone, fraction);
         // A peer that has told us its monitors understands EnterAt; an older one only gets Enter.
-        var enter = KvmSync.PeerDisplays.ContainsKey(zone.Peer)
-            ? KvmWire.EnterAt(zone.TargetDisplay, zone.TargetSide, at)
-            : KvmWire.Fraction(KvmMsg.Enter, at);
+        var enter = EnterMessage(zone, at, KvmSync.PeerDisplays.ContainsKey(zone.Peer));
         if (link == null || !link.Send(enter)) { source.Free(); return; }
         _crossedAt = p;
         _crossedZone = zone;
@@ -333,7 +361,8 @@ sealed class Kvm : IDisposable
         switch ((KvmMsg)m[0])
         {
             case KvmMsg.Leave when _active == link:
-                Release(ReturnPoint(KvmWire.ReadFraction(m)), null, "came back over the edge");
+                var left = KvmWire.ReadLeave(m);
+                Release(ReturnPoint(left.fraction, left.display, left.side), null, "came back over the edge");
                 if (_cameBack is { } back)
                 {
                     // Our files' drag came back over the edge, button still held: it carries on here.
@@ -358,6 +387,9 @@ sealed class Kvm : IDisposable
                 break;
             case KvmMsg.Locked when _active == link:
                 Release(BackPoint(), $"{link.Name} is locked. Unlock it with its own keyboard.", "they're locked");
+                break;
+            case KvmMsg.Paused when _active == link:
+                Release(BackPoint(), $"Sharing is paused on {link.Name}: Beamer is running there.", "they're paused");
                 break;
             case KvmMsg.ClipText or KvmMsg.ClipImage:
                 _ui(() => Clip.FromSync(m));
@@ -453,11 +485,15 @@ sealed class Kvm : IDisposable
     }
 
     /// <summary>Where the pointer comes back: where it left, or (they sent <paramref name="theirFraction"/>) through the zone it crossed.</summary>
-    Point BackPoint() => ReturnPoint(null);
+    Point BackPoint() => ReturnPoint(null, null, null);
 
-    Point ReturnPoint(double? theirFraction)
+    Point ReturnPoint(double? theirFraction, int? theirDisplay, Edge? theirSide)
     {
-        if (_crossedZone is not { } zone) return Inject.CursorPos;
+        if (_crossedZone is not { } crossed) return Inject.CursorPos;
+        // They say which monitor and side the pointer left by: come back through the zone that leads there.
+        var zone = theirFraction is { } tf && Pairing.Find(crossed.Peer) is { } pc
+            ? ZoneForLeave(ZonesFor(pc), crossed, theirDisplay, theirSide, tf)
+            : crossed;
         var d = DisplayBounds(zone.Display);
         var fraction = theirFraction is { } f ? CrossingRule.Return(zone, f) : KvmWire.Along(zone.Side, _crossedAt, d);
         return KvmWire.OnEdge(zone.Side, fraction, d, ReturnInset);
@@ -512,9 +548,10 @@ sealed class Kvm : IDisposable
     {
         Pairing.Changed -= Sync;
         KvmSync.SettingsChanged -= UpdateEdges;
+        KvmSync.LocalChanged -= UpdateEdges;
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaysChanged;
         KvmLook.IsCrossed = () => false;
-        KvmLook.IsLive = fp => Pairing.All.Any(p => string.Equals(p.Fingerprint, fp, StringComparison.OrdinalIgnoreCase));
+        KvmLook.IsLive = _ => false;   // no links any more: the glow and idle hiding stand down
         _beat.Dispose();
         TakeBack();
         _pointer.Writer.TryComplete();
@@ -524,8 +561,10 @@ sealed class Kvm : IDisposable
         _wantHelper = false;
         Inject.Via = null;
         _source.Dispose();
-        HiddenCursor.Show();
+        HiddenCursor.ShowAll();   // every reason: crossed over or idle, the pointer is back
         foreach (var l in _links.Values) l.Dispose();
+        foreach (var h in _hellos.Values) h.Dispose();
+        _hellos.Clear();
     }
 }
 
@@ -612,22 +651,31 @@ static class HiddenCursor
     public const string Crossing = "crossing", Idle = "idle";
     static readonly HashSet<string> Reasons = [];
 
+    // What actually changes the system cursors (tests swap these so they don't touch the real ones).
+    internal static Action Blank = BlankCursors;
+    internal static Action Restorer = Restore;
+
     public static void Hide(string reason = Crossing)
     {
         lock (Lock)
         {
             Reasons.Add(reason);
             if (_hidden) return;
-            try { File.WriteAllText(Flag, ""); } catch { }
-            var and = Enumerable.Repeat((byte)0xFF, 128).ToArray();
-            var xor = new byte[128];
-            var module = Native.GetModuleHandle(null);
-            foreach (var id in Ids)
-            {
-                var blank = CreateCursor(module, 0, 0, 32, 32, and, xor);
-                if (blank != 0 && !SetSystemCursor(blank, id)) DestroyCursor(blank);
-            }
+            Blank();
             _hidden = true;
+        }
+    }
+
+    static void BlankCursors()
+    {
+        try { File.WriteAllText(Flag, ""); } catch { }
+        var and = Enumerable.Repeat((byte)0xFF, 128).ToArray();
+        var xor = new byte[128];
+        var module = Native.GetModuleHandle(null);
+        foreach (var id in Ids)
+        {
+            var blank = CreateCursor(module, 0, 0, 32, 32, and, xor);
+            if (blank != 0 && !SetSystemCursor(blank, id)) DestroyCursor(blank);
         }
     }
 
@@ -637,7 +685,19 @@ static class HiddenCursor
         {
             Reasons.Remove(reason);
             if (!_hidden || Reasons.Count > 0) return;
-            Restore();
+            Restorer();
+            _hidden = false;
+        }
+    }
+
+    /// <summary>Brings the pointer back whatever still wants it hidden (shutting down).</summary>
+    public static void ShowAll()
+    {
+        lock (Lock)
+        {
+            Reasons.Clear();
+            if (!_hidden) return;
+            Restorer();
             _hidden = false;
         }
     }

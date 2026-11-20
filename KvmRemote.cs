@@ -69,7 +69,7 @@ static class KvmRemote
         public async Task RunAsync(CancellationToken ct)
         {
             using var watchdog = new System.Threading.Timer(_ => Watch(), null, 250, 250);
-            KvmSync.Hello(pipe.Send);
+            using var hello = KvmSync.Hello(pipe.Send);   // taken out again when this session ends
             try { await pipe.RunAsync(OnMessage, ct); }
             finally { lock (this) Off(); }
         }
@@ -113,7 +113,12 @@ static class KvmRemote
 
         void Enter(double f, int? display, Edge? side)
         {
-            if (InputLocked()) { KvmLog.Write($"{Name} tried to cross over, but this PC is locked"); pipe.Send(KvmWire.Simple(KvmMsg.Locked)); return; }
+            if (EnterRefusal(BeamerWatch.Paused, InputLocked) is { } refusal)
+            {
+                KvmLog.Write($"{Name} tried to cross over, but this PC is {(refusal == KvmMsg.Paused ? "paused (Beamer is running)" : "locked")}");
+                pipe.Send(KvmWire.Simple(refusal));
+                return;
+            }
             KvmLog.Write($"{Name} crossed over");
             lock (Lock)
             {
@@ -173,7 +178,7 @@ static class KvmRemote
                         _incoming = null;
                         Escape();
                         KvmDrag.Discard(back.Token);
-                        pipe.Send(KvmWire.Fraction(KvmMsg.Leave, fraction));
+                        pipe.Send(KvmWire.LeaveAt(leave.Display, leave.Side, fraction));
                         Off();
                         return;
                     }
@@ -181,7 +186,7 @@ static class KvmRemote
                     {
                         // A file drag from here: carry it over, and cancel it here (Esc).
                         KvmLog.Write($"carrying a drag back to {Name}");
-                        pipe.Send(KvmWire.Fraction(KvmMsg.Leave, fraction));
+                        pipe.Send(KvmWire.LeaveAt(leave.Display, leave.Side, fraction));
                         pipe.Send(KvmDrag.Offer(holding.Paths, fingerprint, holding.Image, holding.Offset, out _));
                         Escape();
                         StripAway();
@@ -190,7 +195,7 @@ static class KvmRemote
                         return;
                     }
                     KvmLog.Write($"{Name} went back over the edge");
-                    pipe.Send(KvmWire.Fraction(KvmMsg.Leave, fraction));
+                    pipe.Send(KvmWire.LeaveAt(leave.Display, leave.Side, fraction));
                     Off();
                     Ui(() => { if (Clip.ForSync() is { } clip) pipe.Send(clip); });
                     return;
@@ -328,6 +333,13 @@ static class KvmRemote
             }
         }
     }
+
+    /// <summary>
+    /// Why an Enter is refused, as the message that tells the controller to let go: Beamer is running here
+    /// (sharing is paused, so it would fight over the mouse), or this PC is locked.
+    /// </summary>
+    internal static KvmMsg? EnterRefusal(bool paused, Func<bool> locked) =>
+        paused ? KvmMsg.Paused : locked() ? KvmMsg.Locked : null;
 
     /// <summary>The lock screen or a UAC prompt has the input; injected input can't reach it.</summary>
     static bool InputLocked()
