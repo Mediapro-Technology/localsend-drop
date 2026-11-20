@@ -317,8 +317,31 @@ static class Program
         KvmRemote.Ui = a => panel.BeginInvoke(a);
         Pairing.AskAccept = card.OnPairRequest;
         Kvm? kvm = null;
-        try { kvm = new Kvm(id, discovery, a => panel.BeginInvoke(a), Notify); }
-        catch (Exception ex) { Notify($"Sharing the mouse and keyboard is off: {ex.Message}", true); }
+        void StartKvm()
+        {
+            try { kvm = new Kvm(id, discovery, a => panel.BeginInvoke(a), Notify); }
+            catch (Exception ex) { Notify($"Sharing the mouse and keyboard is off: {ex.Message}", true); }
+        }
+        // While Beamer runs, sharing is off (it would fight over the mouse); it returns when Beamer quits.
+        using var beamer = new BeamerWatch();
+        if (beamer.Running) KvmLog.Write("Beamer is running: sharing paused");
+        else StartKvm();
+        beamer.Changed += running => panel.BeginInvoke(() =>
+        {
+            if (running)
+            {
+                KvmLog.Write("Beamer started: sharing paused");
+                kvm?.TakeBack();
+                kvm?.Dispose();
+                kvm = null;
+            }
+            else if (kvm == null)
+            {
+                KvmLog.Write("Beamer quit: sharing back on");
+                StartKvm();
+            }
+            panel.Invalidate();
+        });
         // Locking or signing out here: control comes home first.
         SystemEvents.SessionSwitch += (_, _) => kvm?.TakeBack();
         panel.PairKvm = async d =>
