@@ -42,6 +42,10 @@ sealed class SettingsForm : Form
     readonly List<RadioRow> _modes = [];
     readonly CornerPicker _corner = new();
     readonly ToggleSwitch _sound = new(), _autostart = new(), _update = new(), _quiet = new(), _admin = new();
+    readonly LayoutEditor _layout = new();
+    readonly ToggleSwitch _shortcut = new(), _corners = new(), _notch = new(), _glow = new(), _arrival = new(), _hideIdle = new(), _reverse = new();
+    readonly TextField _resistance = new(), _pointer = new(), _scrollSpeed = new();
+    bool _reflecting;
     readonly PillButton _forget = new("Forget");
     readonly PillButton _install = new("Install", primary: true);
     readonly PillButton _checkUpdates = new("Check for updates");
@@ -153,6 +157,18 @@ sealed class SettingsForm : Form
         _scroll.Add(new Card("Theme", null, below: [.. _looks]));
 
         _scroll.Add(new SectionHeader("Mouse and keyboard"));
+        _scroll.Add(new Card("Arrange screens",
+            "Drag the other PC's screens next to yours. The pointer crosses where they touch, and the same on both PCs.", below: [_layout]));
+        _scroll.Add(new Card("Double-tap Right Ctrl to switch", "Sends the mouse and keyboard to the other PC, or brings them back", right: _shortcut, rightWidth: 84));
+        _scroll.Add(new Card("Edge resistance (pixels)", "How far to push past the edge before the pointer crosses. 0 crosses at once.", right: _resistance, rightWidth: 96));
+        _scroll.Add(new Card("Keep corners in place", "The pointer does not cross at the corners, so Start and close buttons keep working", right: _corners, rightWidth: 84));
+        _scroll.Add(new Card("Notch at the top", "A gap in the middle of the top edge where the pointer stays", right: _notch, rightWidth: 84));
+        _scroll.Add(new Card("Glow at the edge", "A soft light where the pointer will cross", right: _glow, rightWidth: 84));
+        _scroll.Add(new Card("Arrival effect", "A ripple where the pointer arrives", right: _arrival, rightWidth: 84));
+        _scroll.Add(new Card("Hide the idle pointer", "On the PC you are not using", right: _hideIdle, rightWidth: 84));
+        _scroll.Add(new Card("Pointer speed (percent)", "Of the other PC's pointer while you control it", right: _pointer, rightWidth: 96));
+        _scroll.Add(new Card("Scroll speed (percent)", "Of the other PC's wheel while you control it", right: _scrollSpeed, rightWidth: 96));
+        _scroll.Add(new Card("Reverse scrolling", "Scroll the other way on the other PC", right: _reverse, rightWidth: 84));
         _scroll.Add(new Card("Control administrator windows",
             "Lets a paired PC click and type in admin windows here, and stops them taking the mouse when you cross over. Windows asks for permission once.",
             right: _admin, rightWidth: 84));
@@ -179,6 +195,59 @@ sealed class SettingsForm : Form
 
         Controls.AddRange([_scroll, _save, _cancel]);
         Ui.OnChange(this, () => { BackColor = Ui.Base; Ui.Chrome(Handle); Invalidate(true); });
+        WireCrossing();
+    }
+
+    /// <summary>Shows the crossing options, then sends every change to the other PC (and keeps showing theirs).</summary>
+    void WireCrossing()
+    {
+        Reflect();
+        void Toggle(ToggleSwitch t, Func<CrossingSettings, Stamper, bool, CrossingSettings> set) =>
+            t.Changed += () => { if (!_reflecting) KvmSync.Set((c, at) => set(c, at, t.Checked)); };
+        Toggle(_shortcut, (c, at, v) => c with { Shortcut = at.Of(v ? "RightCtrl" : "") });
+        Toggle(_corners, (c, at, v) => c with { Corners = at.Of(v) });
+        Toggle(_notch, (c, at, v) => c with { Notch = at.Of(v) });
+        Toggle(_glow, (c, at, v) => c with { Glow = at.Of(v) });
+        Toggle(_arrival, (c, at, v) => c with { Arrival = at.Of(v) });
+        Toggle(_hideIdle, (c, at, v) => c with { HideIdle = at.Of(v) });
+        Toggle(_reverse, (c, at, v) => c with { ReverseScroll = at.Of(v) });
+        void Number(TextField f, int min, int max, Func<CrossingSettings, Stamper, int, CrossingSettings> set) =>
+            f.Committed += () =>
+            {
+                if (_reflecting) return;
+                if (int.TryParse(f.Text.Trim(), out var n)) KvmSync.Set((c, at) => set(c, at, Math.Clamp(n, min, max)));
+                Reflect();   // shows the value as kept (clamped, or the old one if it was not a number)
+            };
+        Number(_resistance, 0, 1000, (c, at, v) => c with { ResistancePx = at.Of(v) });
+        Number(_pointer, 20, 400, (c, at, v) => c with { PointerSpeed = at.Of(v / 100.0) });
+        Number(_scrollSpeed, 20, 400, (c, at, v) => c with { ScrollSpeed = at.Of(v / 100.0) });
+        KvmSync.SettingsChanged += OnTheirChange;
+    }
+
+    void OnTheirChange()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        try { BeginInvoke(Reflect); } catch { }
+    }
+
+    void Reflect()
+    {
+        var c = KvmSync.Load();
+        _reflecting = true;
+        try
+        {
+            _shortcut.Checked = c.Shortcut.Value is { Length: > 0 };
+            _corners.Checked = c.Corners.Value;
+            _notch.Checked = c.Notch.Value;
+            _glow.Checked = c.Glow.Value;
+            _arrival.Checked = c.Arrival.Value;
+            _hideIdle.Checked = c.HideIdle.Value;
+            _reverse.Checked = c.ReverseScroll.Value;
+            _resistance.Text = c.ResistancePx.Value.ToString();
+            _pointer.Text = ((int)Math.Round(c.PointerSpeed.Value * 100)).ToString();
+            _scrollSpeed.Text = ((int)Math.Round(c.ScrollSpeed.Value * 100)).ToString();
+        }
+        finally { _reflecting = false; }
     }
 
     int S(int v) => LogicalToDeviceUnits(v);
@@ -273,6 +342,7 @@ sealed class SettingsForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        KvmSync.SettingsChanged -= OnTheirChange;
         if (DialogResult != DialogResult.OK && Ui.Style != _originalLook) Ui.SetStyle(_originalLook);
         base.OnFormClosed(e);
     }
@@ -490,7 +560,7 @@ sealed class Card : Drawn
             _right.SetBounds(width - S(16) - S(_rightWidth), (HeaderHeight - S(32)) / 2, S(_rightWidth), S(32));
         foreach (var c in _below)
         {
-            var h = c is CornerPicker ? S(150) : S(52);
+            var h = c is CornerPicker ? S(150) : c is LayoutEditor ? S(220) : S(52);
             c.SetBounds(S(16), y, width - S(32), h);
             y += h;
         }
@@ -526,7 +596,13 @@ sealed class TextField : Drawn
     {
         _box.Font = Ui.Body;
         _box.GotFocus += (_, _) => Invalidate();
-        _box.LostFocus += (_, _) => Invalidate();
+        _box.LostFocus += (_, _) => { Invalidate(); Committed?.Invoke(); };
+        _box.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
+            Committed?.Invoke();
+        };
         _box.TextChanged += (_, _) => { if (_error) Error = false; };
         Controls.Add(_box);
         Cursor = Cursors.IBeam;
@@ -540,6 +616,9 @@ sealed class TextField : Drawn
         if (_box.BackColor != bg) _box.BackColor = bg;
         if (_box.ForeColor != Ui.Text) _box.ForeColor = Ui.Text;
     }
+
+    /// <summary>Raised when typing is finished: Enter, or leaving the box.</summary>
+    public event Action? Committed;
 
     public override string Text { get => _box.Text; set => _box.Text = value; }
     public int MaxLength { get => _box.MaxLength; set => _box.MaxLength = value; }
@@ -624,7 +703,10 @@ sealed class ToggleSwitch : Drawn
 
     public ToggleSwitch() => TabStop = true;
 
-    public bool Checked { get => _checked; set { _checked = value; Invalidate(); } }
+    public bool Checked { get => _checked; set { var was = _checked; _checked = value; Invalidate(); if (was != value) Changed?.Invoke(); } }
+
+    /// <summary>Raised when the switch is flipped (by mouse, keyboard or code).</summary>
+    public event Action? Changed;
 
     protected override void OnClick(EventArgs e) { Checked = !Checked; base.OnClick(e); }
 
