@@ -1,13 +1,13 @@
 # STATE — localsend-drop
-Focus: S-001 One mouse and keyboard across PCs, without Beamer · 11/11 done · all cards done — next: /lean:review, then /lean:grill the next phase
+Focus: All cards · 12/12 done · all cards done — next: /lean:review, then /lean:grill the next phase
 Now: —
 Ready: —
 Recent:
+  - 2026-11-20 T-012 
   - 2026-11-20 T-011 Going back needs a real push, not a wobble @50f0b04
   - 2026-11-20 T-010 A smaller screen beside a bigger one uses the whole edge @034799f
   - 2026-11-20 T-009 Settings lists nearby PCs to pair with @2d95709
   - 2026-11-20 T-008 Settings apply at once, crossing lands right @4e0d91b zk:20261120-132848
-  - 2026-11-20 T-007 Fixes from the review of the Beamer work @02cf4b1 zk:20261120-131852
 Last review: 4e0d91b
 Last security review: 50f0b04 (2026-11-20)
 

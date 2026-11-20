@@ -57,4 +57,25 @@ public class ReturnPushTests
         for (var t = 0; t < 3000; t += 8)
             Assert.False(r.Step(t % 16 == 0 ? 2 : 0, t % 16 == 0 ? 0 : 2, 10, t, 120));
     }
+
+    [Fact]
+    public void SlowSteadyPush_StillGoesBack()
+    {
+        // 3 px every 16 ms (under 200 px/s): it has to add up, the leak only starts after a pause.
+        var r = new ReturnPush();
+        r.Arrive(0);
+        var back = false;
+        for (var t = 400; t < 3000 && !back; t += 16) back = r.Step(3, 0, 10, t, 120);
+        Assert.True(back);
+    }
+
+    [Fact]
+    public void Reset_DropsPush()
+    {
+        var r = new ReturnPush();
+        r.Arrive(0);
+        Assert.False(r.Step(100, 0, 10, 400, 120));
+        r.Reset();
+        Assert.False(r.Step(30, 0, 10, 400, 120));
+    }
 }

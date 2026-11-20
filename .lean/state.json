@@ -4,6 +4,11 @@
   "recent": [
     {
       "date": "2026-11-20",
+      "id": "T-012",
+      "notes": []
+    },
+    {
+      "date": "2026-11-20",
       "id": "T-011",
       "title": "Going back needs a real push, not a wobble",
       "notes": []
@@ -70,14 +75,6 @@
       "title": "Edge glow, arrival effect, idle pointer hides",
       "notes": [
         "20261120-131004"
-      ]
-    },
-    {
-      "date": "2026-11-20",
-      "id": "T-002",
-      "title": "Sharing pauses while Beamer runs",
-      "notes": [
-        "20261120-130831"
       ]
     }
   ],

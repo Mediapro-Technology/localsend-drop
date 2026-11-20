@@ -62,11 +62,6 @@ static class KvmZones
     public const int UnknownDisplay = -1;
 
     /// <summary>
-    /// The old one-edge-per-PC pairing as zones: a full-span zone on every monitor whose edge is on the
-    /// outside of the desktop on that side, leading to the matching full edge of the other PC (target
-    /// monitor unknown: it uses its own outer edge).
-    /// </summary>
-    /// <summary>
     /// A screen that sits wholly within the other PC's edge, alone on that edge, takes the whole edge: a
     /// 1080p laptop beside a 1440p monitor crosses from anywhere on it, not just where the tiles touch.
     /// A tile hanging past an end, or sharing an edge with another, keeps its span.
@@ -85,6 +80,11 @@ static class KvmZones
         })];
     }
 
+    /// <summary>
+    /// The old one-edge-per-PC pairing as zones: a full-span zone on every monitor whose edge is on the
+    /// outside of the desktop on that side, leading to the matching full edge of the other PC (target
+    /// monitor unknown: it uses its own outer edge).
+    /// </summary>
     public static IReadOnlyList<Zone> Migrate(PairedPc pc, IReadOnlyList<DisplayInfo> displays)
     {
         if (displays.Count == 0) return [];

@@ -97,22 +97,28 @@ static class CrossingRule
 /// </summary>
 sealed class ReturnPush
 {
-    public const int GraceMs = 300, GracePx = 4, LeakPxPerSec = 300;
+    public const int GraceMs = 300, GracePx = 4, LeakPxPerSec = 300, LeakAfterMs = 150;
     double _push;
-    long _last, _arrived;
+    long _lastPush, _lastStep, _arrived;
     bool _settled;
 
-    public void Arrive(long now) { _push = 0; _last = _arrived = now; _settled = false; }
+    public void Arrive(long now) { _push = 0; _lastPush = _lastStep = _arrived = now; _settled = false; }
+
+    /// <summary>The pointer left the edge: what was pushed there no longer counts.</summary>
+    public void Reset() => _push = 0;
 
     /// <summary>One move: px pushed outward against the edge, px moved inward, px from the arrival point. True: go back now.</summary>
     public bool Step(int outward, int inward, int moved, long now, int needed)
     {
-        _push = Math.Max(0, _push - Math.Max(0, now - _last) * LeakPxPerSec / 1000.0);
-        _last = now;
+        // A steady push, however slow, adds up; after a pause in pushing it leaks away.
+        var leakFrom = Math.Max(_lastStep, _lastPush + LeakAfterMs);
+        if (now > leakFrom) _push = Math.Max(0, _push - (now - leakFrom) * LeakPxPerSec / 1000.0);
+        _lastStep = Math.Max(_lastStep, now);
         if (!_settled && (now - _arrived >= GraceMs || moved >= GracePx)) _settled = true;
         _push = Math.Max(0, _push - inward);
         if (outward <= 0 || !_settled) return false;
         _push += outward;
+        _lastPush = now;
         if (_push < needed) return false;
         _push = 0;
         return true;

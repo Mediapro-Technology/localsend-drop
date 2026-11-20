@@ -20,7 +20,9 @@ public class LayoutEditorTests
     {
         // Peer is half as tall and sits wholly within our right edge: all of our edge leads there (T-010).
         var peer = new LayoutTile(false, 0, new Rectangle(1920, 540, 1920, 540));
-        var z = Assert.Single(LayoutEditor.ZonesFrom([Mine, peer], "pc"));
+        var saved = Assert.Single(LayoutEditor.ZonesFrom([Mine, peer], "pc"));
+        Assert.Equal(0.5, saved.From, 3);   // saved as placed, so the tile reloads there
+        var z = Assert.Single(KvmZones.Widen([saved]));
         Assert.Equal(Edge.Right, z.Side);
         Assert.Equal((0.0, 1.0, 0.0, 1.0), (z.From, z.To, z.TargetFrom, z.TargetTo));
     }

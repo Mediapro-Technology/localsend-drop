@@ -161,12 +161,14 @@ static class KvmRemote
             var leave = KvmZones.Hit(_zones, displays, pinned);
             var outward = leave == null ? 0 : CrossingRule.Outward(leave.Side, new Point(next.X - pinned.X, next.Y - pinned.Y));
             // Push against the edge to go back, like crossing over: a wobble, or the hand still moving from the crossing, isn't enough.
-            var face = leave?.Side ?? (_zones.Length > 0 ? _zones[0].Side : (Edge?)null);
-            var inward = face is { } f ? CrossingRule.Outward(Pairing.Opposite(f), new Point(dx, dy)) : 0;
-            var moved = Math.Abs(next.X - _arrivedAt.X) + Math.Abs(next.Y - _arrivedAt.Y);
+            // Off the edge (moved inward or along out of the zone): what was pushed there no longer counts.
+            if (leave == null) _back.Reset();
+            var inward = leave != null ? CrossingRule.Outward(Pairing.Opposite(leave.Side), new Point(dx, dy)) : 0;
+            // From where it really is (an outward push past the edge mustn't count as having moved away).
+            var moved = Math.Abs(pinned.X - _arrivedAt.X) + Math.Abs(pinned.Y - _arrivedAt.Y);
             var holding = leave != null && leftHeld && _incoming == null ? StripHolding() : null;
-            var needed = leave != null && leftHeld && _incoming == null && holding == null
-                ? DragPush : Math.Max(LeavePush, Settings.Current.Crossing.ResistancePx.Value);
+            var plain = Math.Max(LeavePush, Settings.Current.Crossing.ResistancePx.Value);
+            var needed = leave != null && leftHeld && _incoming == null && holding == null ? Math.Max(DragPush, plain) : plain;
             var goBack = _back.Step(here != null ? outward : 0, inward, moved, Environment.TickCount64, needed);
             if (leave != null && here != null && outward > 0)
             {
@@ -412,9 +414,10 @@ static class KvmTest
             pipe.Send(KvmWire.Move(-102, 0));   // a 1 px wobble past the edge
             Check(Next(KvmMsg.Leave, 200) == null, "a small wobble past the edge doesn't send it back");
             Thread.Sleep(300);
-            pipe.Send(KvmWire.Move(-60, 0));
+            var resist = Math.Max(40, Settings.Current.Crossing.ResistancePx.Value);
+            pipe.Send(KvmWire.Move(-(resist - 10), 0));
             Check(Next(KvmMsg.Leave, 200) == null, "less than the crossing resistance doesn't send it back");
-            pipe.Send(KvmWire.Move(-130, 0));
+            pipe.Send(KvmWire.Move(-30, 0));
             var leave = Next(KvmMsg.Leave, 1000);
             Check(leave != null && Math.Abs(KvmWire.ReadFraction(leave) - 0.5) < 0.01, "pushing past the facing edge sends Leave at the same height");
 

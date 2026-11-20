@@ -36,7 +36,7 @@ sealed class LayoutEditor : Drawn
                 zones.Add(new Zone(m.Display, t.side, (from - aStart) / (double)aLen, (to - aStart) / (double)aLen,
                     peer, p.Display, t.target, (from - bStart) / (double)bLen, (to - bStart) / (double)bLen));
             }
-        return KvmZones.Widen(zones);
+        return [.. zones];   // the real spans: widened where they're used (Kvm.ZonesFor), so tiles reload where they were put
     }
 
     /// <summary>Where the other PC's monitors sit so that <paramref name="zone"/> holds: its target monitor touches ours.</summary>
@@ -192,7 +192,7 @@ sealed class LayoutEditor : Drawn
     {
         var g = e.Graphics;
         PaintBack(g);
-        var tiles = ZonesFrom([.. _mine, .. _peer], _peerFingerprint);
+        var tiles = KvmZones.Widen(ZonesFrom([.. _mine, .. _peer], _peerFingerprint));   // where it really crosses
         foreach (var t in _mine) DrawTile(g, t, false);
         foreach (var t in _peer) DrawTile(g, t, true);
         // Where the pointer crosses: an accent bar along the shared span of the touching edges.
