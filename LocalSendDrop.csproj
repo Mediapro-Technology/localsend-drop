@@ -24,6 +24,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The test project lives in a subfolder; its files are not part of the app. -->
+    <Compile Remove="tests/**" />
+    <InternalsVisibleTo Include="LocalSendDrop.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Certificate PCs must trust before installing the package (see Packaging.cs) -->
     <EmbeddedResource Include="shell\bin\LocalSendDrop.cer" LogicalName="package.cer" />
   </ItemGroup>

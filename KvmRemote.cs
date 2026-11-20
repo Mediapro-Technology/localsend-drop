@@ -67,6 +67,7 @@ static class KvmRemote
         public async Task RunAsync(CancellationToken ct)
         {
             using var watchdog = new System.Threading.Timer(_ => Watch(), null, 250, 250);
+            KvmSync.Hello(pipe.Send);
             try { await pipe.RunAsync(OnMessage, ct); }
             finally { lock (this) Off(); }
         }
@@ -91,6 +92,7 @@ static class KvmRemote
                         break;
                     case KvmMsg.Release: Off(); break;
                     case KvmMsg.DragMeta when _on && KvmDrag.ReadMeta(m) is { } carried: StartIncoming(carried.meta, carried.image); break;
+                    case KvmMsg.Displays or KvmMsg.Sync: KvmSync.OnMessage(fingerprint, m); break;
                     case KvmMsg.DragWant: KvmDrag.OnWant(KvmDrag.ReadToken(m), fingerprint); break;
                     case KvmMsg.DragCancel: KvmDrag.OnCancel(KvmDrag.ReadToken(m)); break;
                     case KvmMsg.ClipText or KvmMsg.ClipImage: Ui(() => Clip.FromSync(m)); break;
