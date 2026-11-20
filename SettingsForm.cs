@@ -43,6 +43,9 @@ sealed class SettingsForm : Form
     readonly CornerPicker _corner = new();
     readonly ToggleSwitch _sound = new(), _autostart = new(), _update = new(), _quiet = new(), _admin = new();
     readonly LayoutEditor _layout = new();
+    readonly PcList _pcs = new();
+    readonly System.Windows.Forms.Timer _pcTimer = new() { Interval = 2000 };
+    readonly PcAccess? _pcAccess;
     readonly ToggleSwitch _shortcut = new(), _corners = new(), _notch = new(), _glow = new(), _arrival = new(), _hideIdle = new(), _reverse = new();
     readonly TextField _resistance = new(), _pointer = new(), _scrollSpeed = new();
     bool _reflecting;
@@ -58,9 +61,10 @@ sealed class SettingsForm : Form
     bool _closeHot;
 
     /// <param name="checkUpdates">Checks for (and installs) an update, reporting progress text.</param>
-    public SettingsForm(bool autostart, Func<Task<bool>> install, Func<Action<string>, Task> checkUpdates)
+    public SettingsForm(bool autostart, Func<Task<bool>> install, Func<Action<string>, Task> checkUpdates, PcAccess? pcs = null)
     {
         var s = Settings.Current;
+        _pcAccess = pcs;
         _installAction = install;
         Text = "LocalSend Drop settings";
         Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
@@ -157,6 +161,16 @@ sealed class SettingsForm : Form
         _scroll.Add(new Card("Theme", null, below: [.. _looks]));
 
         _scroll.Add(new SectionHeader("Mouse and keyboard"));
+        if (pcs != null)
+        {
+            _scroll.Add(new Card("PCs", "Pair a PC to share this mouse and keyboard with it", below: [_pcs]));
+            _pcs.Pair += d => { TopMost = false; pcs.Pair(d); };   // the pairing windows come up over Settings
+            Activated += (_, _) => TopMost = true;                 // back on top once you return to it
+            _pcs.Unpair += (fp, d) => { pcs.Unpair(fp, d); RefreshPcs(); };
+            _pcTimer.Tick += (_, _) => RefreshPcs();
+            RefreshPcs();
+            _pcTimer.Start();
+        }
         _scroll.Add(new Card("Arrange screens",
             "Drag the other PC's screens next to yours. The pointer crosses where they touch, and the same on both PCs.", below: [_layout]));
         _scroll.Add(new Card("Double-tap Right Ctrl to switch", "Sends the mouse and keyboard to the other PC, or brings them back", right: _shortcut, rightWidth: 84));
@@ -222,6 +236,17 @@ sealed class SettingsForm : Form
         Number(_pointer, 20, 400, (c, at, v) => c with { PointerSpeed = at.Of(v / 100.0) });
         Number(_scrollSpeed, 20, 400, (c, at, v) => c with { ScrollSpeed = at.Of(v / 100.0) });
         KvmSync.SettingsChanged += OnTheirChange;
+    }
+
+    /// <summary>Shows the PCs as they are now (pairing, link and discovery change while Settings is open).</summary>
+    void RefreshPcs()
+    {
+        if (_pcAccess == null || IsDisposed) return;
+        var rows = PcList.Rows(_pcAccess.Nearby(), Pairing.All, _pcAccess.Linked,
+            fp => Settings.Current.Zones.Any(z => string.Equals(z.Peer, fp, StringComparison.OrdinalIgnoreCase)));
+        if (rows.SequenceEqual(_pcs.Current)) return;   // nothing new: leave the layout editor alone
+        if (_pcs.Show(rows) && IsHandleCreated) _scroll.LayoutCards();
+        if (IsHandleCreated) _layout.Reload();
     }
 
     void OnTheirChange()
@@ -343,6 +368,7 @@ sealed class SettingsForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         KvmSync.SettingsChanged -= OnTheirChange;
+        _pcTimer.Dispose();
         if (DialogResult != DialogResult.OK && Ui.Style != _originalLook) Ui.SetStyle(_originalLook);
         base.OnFormClosed(e);
     }
@@ -560,7 +586,7 @@ sealed class Card : Drawn
             _right.SetBounds(width - S(16) - S(_rightWidth), (HeaderHeight - S(32)) / 2, S(_rightWidth), S(32));
         foreach (var c in _below)
         {
-            var h = c is CornerPicker ? S(150) : c is LayoutEditor ? S(220) : S(52);
+            var h = c is CornerPicker ? S(150) : c is LayoutEditor ? S(220) : c is PcList pcs ? S(52) * pcs.Lines : S(52);
             c.SetBounds(S(16), y, width - S(32), h);
             y += h;
         }

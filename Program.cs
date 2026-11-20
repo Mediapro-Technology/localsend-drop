@@ -422,7 +422,14 @@ static class Program
             try
             {
                 f = open = new SettingsForm(IsAutostart(), () => InstallPackage(mayPrompt: true),
-                    status => CheckForUpdates(manual: true, status));
+                    status => CheckForUpdates(manual: true, status),
+                    new PcAccess(() => discovery.Devices, fp => kvm?.IsLinked(fp) == true,
+                        d => panel.PairKvm?.Invoke(d),
+                        (fp, d) =>
+                        {
+                            if (d != null) panel.SetKvmEdge?.Invoke(d, null);
+                            else { Pairing.Remove(fp); Notify("Unpaired here. That PC isn't nearby, so unpair it there too.", false); }
+                        }));
                 ok = f.ShowDialog() == DialogResult.OK;
             }
             catch (Exception ex)

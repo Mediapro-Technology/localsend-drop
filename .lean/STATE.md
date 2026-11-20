@@ -1,13 +1,13 @@
 # STATE — localsend-drop
-Focus: S-001 One mouse and keyboard across PCs, without Beamer · 8/8 done · all cards done — next: /lean:review, then /lean:grill the next phase
+Focus: S-001 One mouse and keyboard across PCs, without Beamer · 9/9 done · all cards done — next: /lean:review, then /lean:grill the next phase
 Now: —
 Ready: —
 Recent:
+  - 2026-11-20 T-009 Settings lists nearby PCs to pair with
   - 2026-11-20 T-008 Settings apply at once, crossing lands right @4e0d91b zk:20261120-132848
   - 2026-11-20 T-007 Fixes from the review of the Beamer work @02cf4b1 zk:20261120-131852
   - 2026-11-20 T-004 Switch PCs with a shortcut, set speeds @ac79a6e zk:20261120-131555,20261120-131555-2
   - 2026-11-20 T-003 Crossing follows the screen layout @95c2421 zk:20261120-131334,20261120-131334-2
-  - 2026-11-20 T-005 Arrange screens and options, same on both @e2cd436 zk:20261120-131048,20261120-131048-2,20261120-131048-3
 Last review: 4e0d91b
 Last security review: 4e0d91b (2026-11-20)
 

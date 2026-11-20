@@ -4,6 +4,12 @@
   "recent": [
     {
       "date": "2026-11-20",
+      "id": "T-009",
+      "title": "Settings lists nearby PCs to pair with",
+      "notes": []
+    },
+    {
+      "date": "2026-11-20",
       "id": "T-008",
       "title": "Settings apply at once, crossing lands right",
       "notes": [

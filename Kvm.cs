@@ -85,6 +85,9 @@ sealed class Kvm : IDisposable
     /// <summary>Whether input comes through the elevated admin helper right now.</summary>
     public bool HelperConnected => _source is HelperClient;
 
+    /// <summary>Whether the link to that paired PC is up.</summary>
+    public bool IsLinked(string fingerprint) => _links.TryGetValue(fingerprint, out var l) && l.IsConnected;
+
     IInputSource Wire(IInputSource s)
     {
         s.Crossed += OnCrossed;
