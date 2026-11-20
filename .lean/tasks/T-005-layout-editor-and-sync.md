@@ -2,7 +2,7 @@
 id: T-005
 title: Arrange screens and options, same on both
 spec: S-001
-status: todo
+status: doing
 depends: [T-001]
 files: [LayoutEditor.cs, KvmSync.cs, SettingsForm.cs, tests/LocalSendDrop.Tests/KvmSyncTests.cs, tests/LocalSendDrop.Tests/LayoutEditorTests.cs]
 tdd: strict

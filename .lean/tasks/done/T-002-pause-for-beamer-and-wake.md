@@ -2,10 +2,11 @@
 id: T-002
 title: Sharing pauses while Beamer runs
 spec: S-001
-status: todo
+status: done
 depends: [T-001]
 files: [BeamerWatch.cs, Program.cs, DropPanel.cs, tests/LocalSendDrop.Tests/BeamerWatchTests.cs]
 tdd: after
+done: 2026-11-20
 ---
 ## Goal
 While Beamer.exe runs, LocalSend Drop's mouse and keyboard sharing is off and the panel says why; it comes back by itself when Beamer quits (A1). Also a "Wake" item for an offline paired PC in the panel menu (A12, manual part).

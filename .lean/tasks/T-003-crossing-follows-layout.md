@@ -2,7 +2,7 @@
 id: T-003
 title: Crossing follows the screen layout
 spec: S-001
-status: todo
+status: doing
 depends: [T-001]
 files: [Kvm.cs, InputEngine.cs, KvmRemote.cs, AdminHelper.cs, CrossingRule.cs, tests/LocalSendDrop.Tests/CrossingTests.cs]
 tdd: strict

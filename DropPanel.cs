@@ -894,12 +894,20 @@ sealed class DropPanel : Form
         if (Pairing.Find(d.Fingerprint) is { } paired)
         {
             var kvm = new ToolStripMenuItem("Mouse and keyboard");
+            if (BeamerWatch.Paused)
+            {
+                kvm.DropDownItems.Add(new ToolStripMenuItem("Paused: Beamer is running") { Enabled = false });
+                kvm.DropDownItems.Add(new ToolStripSeparator());
+            }
             foreach (var e in (Edge[])[Edge.Left, Edge.Right, Edge.Top, Edge.Bottom])
                 kvm.DropDownItems.Add(new ToolStripMenuItem($"It's {Pairing.Describe(e)}", null, (_, _) => SetKvmEdge?.Invoke(d, e))
                     { Checked = paired.Edge == e });
             kvm.DropDownItems.Add(new ToolStripSeparator());
             kvm.DropDownItems.Add("Unpair", null, (_, _) => SetKvmEdge?.Invoke(d, null));
             menu.Items.Add(kvm);
+            if (paired.Mac.Length > 0)
+                menu.Items.Add("Wake", null, (_, _) =>
+                    KvmLog.Write($"Wake {paired.Alias} ({paired.Mac}): " + (WakeOnLan.Send(paired.Mac) ? "magic packet sent" : "failed")));
         }
         else if (d.DeviceType != "mobile")
             menu.Items.Add("Share mouse and keyboard…", null, (_, _) => BeginInvoke(() => PairKvm?.Invoke(d)));
