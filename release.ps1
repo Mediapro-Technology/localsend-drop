@@ -41,6 +41,7 @@ $ErrorActionPreference = "Stop"
 $notesFile = New-TemporaryFile
 Set-Content $notesFile $Notes -Encoding utf8
 $extra = if ($Prerelease) { @("--prerelease", "--latest=false") } else { @() }
-gh release create "v$Version" "$root\dist\LocalSendDrop-Setup.exe" "$root\dist\LocalSendDrop.msix" "$root\dist\LocalSendDrop.exe" "$root\dist\LocalSendDrop.cer" "$root\install.ps1" `
+# Relative paths: gh reads "#" in a path as "file#label", and this folder is "C# applications".
+gh release create "v$Version" dist/LocalSendDrop-Setup.exe dist/LocalSendDrop.msix dist/LocalSendDrop.exe dist/LocalSendDrop.cer install.ps1 `
     --repo Mediapro-Technology/localsend-drop --title "LocalSend Drop $Version" --notes-file $notesFile @extra
 Remove-Item $notesFile
