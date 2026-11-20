@@ -16,6 +16,8 @@ sealed class PairedPc
     public string Alias { get; set; } = "";
     /// <summary>Where that PC is, seen from this one.</summary>
     public Edge Edge { get; set; } = Edge.Right;
+    /// <summary>Hardware address for Wake-on-LAN, learnt while linked; empty until then.</summary>
+    public string Mac { get; set; } = "";
 }
 
 /// <summary>

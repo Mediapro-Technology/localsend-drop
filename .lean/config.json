@@ -1,0 +1,27 @@
+{
+  "test": "dotnet test tests/LocalSendDrop.Tests",
+  "testFast": "",
+  "tddStrict": [],
+  "deadline": "",
+  "deadlineLabel": "",
+  "security": {
+    "paths": [
+      "**/*.rules",
+      "**/auth/**",
+      "**/functions/**",
+      "**/firebase.json",
+      "**/.env*"
+    ],
+    "ignore": []
+  },
+  "parallel": {
+    "maxAgents": 3,
+    "setup": "",
+    "portEnv": ""
+  },
+  "ids": {
+    "task": "T",
+    "spec": "S"
+  },
+  "sync": false
+}

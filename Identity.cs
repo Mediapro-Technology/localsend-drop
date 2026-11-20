@@ -94,6 +94,10 @@ sealed class Settings
     public bool AdminHelper { get; set; }
     /// <summary>PCs sharing this PC's mouse and keyboard (and the other way). Only these may send input.</summary>
     public List<PairedPc> Paired { get; set; } = [];
+    /// <summary>Crossing options, the same on both paired PCs.</summary>
+    public CrossingSettings Crossing { get; set; } = new();
+    /// <summary>Which monitor edge span leads to which monitor of which PC. Empty = migrate from Paired.Edge on load.</summary>
+    public List<Zone> Zones { get; set; } = [];
     /// <summary>Fingerprints of senders accepted before.</summary>
     public List<string> Trusted { get; set; } = [];
 
@@ -115,8 +119,20 @@ sealed class Settings
 
     static Settings Load()
     {
-        try { return JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)) ?? new(); }
-        catch { return new(); }
+        Settings s;
+        try { s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)) ?? new(); }
+        catch { s = new(); }
+        s.MigrateZones();
+        return s;
+    }
+
+    /// <summary>Pairings made before zones existed become a full-span zone on their old edge.</summary>
+    internal void MigrateZones()
+    {
+        if (Zones.Count > 0 || Paired.Count == 0) return;
+        DisplayInfo[] displays;
+        try { displays = KvmZones.Current(); } catch { return; }
+        foreach (var pc in Paired) Zones.AddRange(KvmZones.Migrate(pc, displays));
     }
 
     public void Save()

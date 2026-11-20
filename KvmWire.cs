@@ -25,6 +25,9 @@ enum KvmMsg : byte
     DragMeta = 11,  // carrying files over: i32 json length, json (KvmDrag.Meta), PNG drag image
     DragWant = 12,  // token: send the files now (the other side is copying while you drag)
     DragCancel = 13,// token: that drag ended without a drop here
+    EnterAt = 14,   // u8 display, u8 side (Edge), u16 fraction along that edge of that display (Enter stays for older peers)
+    Displays = 15,  // json DisplayInfo[]: this PC's monitors
+    Sync = 16,      // json CrossingSettings
 }
 
 static class KvmWire
@@ -39,6 +42,30 @@ static class KvmWire
         m[0] = (byte)t;
         BinaryPrimitives.WriteUInt16LittleEndian(m.AsSpan(1), (ushort)Math.Round(Math.Clamp(f, 0, 1) * 65535));
         return m;
+    }
+
+    public static byte[] EnterAt(int display, Edge side, double f)
+    {
+        var m = new byte[5];
+        m[0] = (byte)KvmMsg.EnterAt;
+        m[1] = (byte)display;
+        m[2] = (byte)side;
+        BinaryPrimitives.WriteUInt16LittleEndian(m.AsSpan(3), (ushort)Math.Round(Math.Clamp(f, 0, 1) * 65535));
+        return m;
+    }
+
+    public static (int display, Edge side, double fraction)? ReadEnterAt(ReadOnlySpan<byte> m) =>
+        m.Length >= 5 && m[2] <= (byte)Edge.Bottom
+            ? (m[1], (Edge)m[2], BinaryPrimitives.ReadUInt16LittleEndian(m[3..]) / 65535.0)
+            : null;
+
+    public static byte[] JsonMsg(KvmMsg t, object payload) =>
+        WithPayload(t, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload));
+
+    public static T? ReadJson<T>(byte[] m)
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<T>(m.AsSpan(1)); }
+        catch (System.Text.Json.JsonException) { return default; }
     }
 
     public static double ReadFraction(ReadOnlySpan<byte> m) => m.Length >= 3 ? BinaryPrimitives.ReadUInt16LittleEndian(m[1..]) / 65535.0 : 0.5;

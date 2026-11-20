@@ -54,6 +54,7 @@ sealed class Kvm : IDisposable
         _ui = ui;
         _notify = notify;
         HiddenCursor.RecoverAfterCrash();
+        KvmLook.Start();
         _capture = new CaptureWindow();
         _strip = new DropStrip();
         _dragWatch = new System.Windows.Forms.Timer { Interval = 40 };
@@ -170,7 +171,7 @@ sealed class Kvm : IDisposable
                 if (_active == l) Release(BackPoint(), $"Lost the connection to {l.Name}", "link dropped");
                 UpdateEdges();
             };
-            link.Connected += l => { KvmLog.Write($"link to {l.Name} connected"); UpdateEdges(); };
+            link.Connected += l => { KvmLog.Write($"link to {l.Name} connected"); KvmSync.Hello(l.Send); UpdateEdges(); };
             _links[fp] = link;
         }
         UpdateEdges();
@@ -254,6 +255,9 @@ sealed class Kvm : IDisposable
                     _ui(() => KvmDrag.RunDrag(back.paths, back.image, back.offset, PressHere, _ => { }));
                 }
                 _outgoing = null;
+                break;
+            case KvmMsg.Displays or KvmMsg.Sync:
+                KvmSync.OnMessage(link.Fingerprint, m);
                 break;
             case KvmMsg.DragWant:
                 KvmDrag.OnWant(KvmDrag.ReadToken(m), link.Fingerprint);
@@ -507,10 +511,16 @@ static class HiddenCursor
     public static bool IsHidden => _hidden;
     static string Flag => Path.Combine(Identity.DataDir, "cursor-hidden");
 
-    public static void Hide()
+    // Why it is hidden: "crossing" (input is on the other PC) or "idle". It comes back only when none is left,
+    // so the idle timer can never unhide a pointer that is crossed over.
+    public const string Crossing = "crossing", Idle = "idle";
+    static readonly HashSet<string> Reasons = [];
+
+    public static void Hide(string reason = Crossing)
     {
         lock (Lock)
         {
+            Reasons.Add(reason);
             if (_hidden) return;
             try { File.WriteAllText(Flag, ""); } catch { }
             var and = Enumerable.Repeat((byte)0xFF, 128).ToArray();
@@ -525,11 +535,12 @@ static class HiddenCursor
         }
     }
 
-    public static void Show()
+    public static void Show(string reason = Crossing)
     {
         lock (Lock)
         {
-            if (!_hidden) return;
+            Reasons.Remove(reason);
+            if (!_hidden || Reasons.Count > 0) return;
             Restore();
             _hidden = false;
         }

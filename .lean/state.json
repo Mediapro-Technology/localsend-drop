@@ -1,0 +1,16 @@
+{
+  "project": "localsend-drop",
+  "blockers": [],
+  "recent": [
+    {
+      "date": "2026-11-20",
+      "id": "T-001",
+      "title": "Groundwork for layout, sync and tests",
+      "notes": [
+        "20261120-130720",
+        "20261120-130720-2"
+      ]
+    }
+  ],
+  "reviewed": null
+}
