@@ -39,6 +39,30 @@ sealed class LayoutEditor : Drawn
         return [.. zones];   // the real spans: widened where they're used (Kvm.ZonesFor), so tiles reload where they were put
     }
 
+    /// <summary>A size for the other PC's screens as kept: 25 to 400 percent.</summary>
+    public static int ClampSize(int percent) => Math.Clamp(percent, 25, 400);
+
+    /// <summary>The other PC's monitors drawn <paramref name="percent"/> as big: sizes and their offsets from the top-left.</summary>
+    public static DisplayInfo[] Scaled(IReadOnlyList<DisplayInfo> displays, double percent)
+    {
+        if (displays.Count == 0) return [];
+        var f = percent / 100.0;
+        int ox = displays.Min(d => d.Bounds.Left), oy = displays.Min(d => d.Bounds.Top);
+        int R(double v) => (int)Math.Round(v);
+        return [.. displays.Select(d => d with
+        {
+            Bounds = new Rectangle(ox + R((d.Bounds.Left - ox) * f), oy + R((d.Bounds.Top - oy) * f), R(d.Bounds.Width * f), R(d.Bounds.Height * f)),
+        })];
+    }
+
+    /// <summary>The paired PC the editor shows: one that has told us its monitors, else the first.</summary>
+    public static PairedPc? Peer() =>
+        Pairing.All.FirstOrDefault(p => KvmSync.PeerDisplays.ContainsKey(p.Fingerprint)) ?? Pairing.All.FirstOrDefault();
+
+    /// <summary>The size its screens are drawn at, in percent.</summary>
+    public static int SizeOf(string fingerprint) =>
+        Settings.Current.PeerSize.TryGetValue(fingerprint, out var p) ? ClampSize(p) : 100;
+
     /// <summary>Where the other PC's monitors sit so that <paramref name="zone"/> holds: its target monitor touches ours.</summary>
     static Point PlaceBy(Zone zone, Rectangle mine, Rectangle anchor)
     {
@@ -98,12 +122,13 @@ sealed class LayoutEditor : Drawn
         if (_dragging) return;
         _mine.Clear();
         foreach (var d in KvmZones.Current()) _mine.Add(new LayoutTile(true, d.Index, d.Bounds));
-        var pc = Pairing.All.FirstOrDefault(p => KvmSync.PeerDisplays.ContainsKey(p.Fingerprint)) ?? Pairing.All.FirstOrDefault();
+        var pc = Peer();
         _peer = [];
         _peerFingerprint = pc?.Fingerprint ?? "";
         _peerName = pc?.Alias ?? "";
-        if (pc != null && KvmSync.PeerDisplays.TryGetValue(pc.Fingerprint, out var theirs) && theirs.Length > 0)
+        if (pc != null && KvmSync.PeerDisplays.TryGetValue(pc.Fingerprint, out var real) && real.Length > 0)
         {
+            var theirs = Scaled(real, SizeOf(pc.Fingerprint));
             var origin = theirs.Min(d => d.Bounds.Left);
             var top = theirs.Min(d => d.Bounds.Top);
             var union = _mine.Select(t => t.Bounds).Aggregate(Rectangle.Union);
@@ -176,6 +201,23 @@ sealed class LayoutEditor : Drawn
         else Cursor = _peer.Any(t => ToScreen(t.Bounds).Contains(e.Location)) ? Cursors.SizeAll : Cursors.Default;
     }
 
+    /// <summary>Saves where the tiles touch now as the layout (both PCs get it).</summary>
+    public void SaveLayout()
+    {
+        if (_peer.Count == 0) return;
+        var zones = ZonesFrom([.. _mine, .. _peer], _peerFingerprint);
+        KvmSync.Set((c, at) => c with { Layout = at.Of(zones) });
+    }
+
+    /// <summary>The other PC's screens were made bigger or smaller: draw them so, and keep a saved layout in step.</summary>
+    public void Resized()
+    {
+        if (_dragging) return;   // the drop saves it, at the new size (Reload runs then)
+        var hadLayout = Settings.Current.Zones.Any(z => string.Equals(z.Peer, _peerFingerprint, StringComparison.OrdinalIgnoreCase));
+        Reload();
+        if (hadLayout) SaveLayout();
+    }
+
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
@@ -183,8 +225,7 @@ sealed class LayoutEditor : Drawn
         _dragging = false;
         Capture = false;
         Cursor = Cursors.Default;
-        var zones = ZonesFrom([.. _mine, .. _peer], _peerFingerprint);
-        KvmSync.Set((c, at) => c with { Layout = at.Of(zones) });
+        SaveLayout();
         Invalidate();
     }
 

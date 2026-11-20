@@ -46,8 +46,9 @@ sealed class SettingsForm : Form
     readonly PcList _pcs = new();
     readonly System.Windows.Forms.Timer _pcTimer = new() { Interval = 2000 };
     readonly PcAccess? _pcAccess;
+    string _sizeFor = "";   // the PC whose size the box shows
     readonly ToggleSwitch _shortcut = new(), _corners = new(), _notch = new(), _glow = new(), _arrival = new(), _hideIdle = new(), _reverse = new();
-    readonly TextField _resistance = new(), _pointer = new(), _scrollSpeed = new();
+    readonly TextField _resistance = new(), _pointer = new(), _scrollSpeed = new(), _peerSize = new();
     bool _reflecting;
     readonly PillButton _forget = new("Forget");
     readonly PillButton _install = new("Install", primary: true);
@@ -173,6 +174,22 @@ sealed class SettingsForm : Form
         }
         _scroll.Add(new Card("Arrange screens",
             "Drag the other PC's screens next to yours. The pointer crosses where they touch, and the same on both PCs.", below: [_layout]));
+        _scroll.Add(new Card("Size of the other PC's screens (percent)",
+            "Bigger or smaller in Arrange screens, so they line up with yours. 133 makes a 1080p screen as tall as a 1440p one.",
+            right: _peerSize, rightWidth: 96));
+        _peerSize.Text = "100";
+        ShowPeerSize();
+        _peerSize.Committed += () =>
+        {
+            if (_sizeFor == "") return;
+            var fp = _sizeFor;
+            var size = int.TryParse(_peerSize.Text.Trim(), out var n) ? LayoutEditor.ClampSize(n) : LayoutEditor.SizeOf(fp);
+            _peerSize.Text = size.ToString();
+            if (size == LayoutEditor.SizeOf(fp)) return;
+            Settings.Current.PeerSize[fp] = size;
+            try { Settings.Current.Save(); } catch { }
+            _layout.Resized();
+        };
         _scroll.Add(new Card("Double-tap Right Ctrl to switch", "Sends the mouse and keyboard to the other PC, or brings them back", right: _shortcut, rightWidth: 84));
         _scroll.Add(new Card("Edge resistance (pixels)", "How far to push past the edge before the pointer crosses. 0 crosses at once.", right: _resistance, rightWidth: 96));
         _scroll.Add(new Card("Keep corners in place", "The pointer does not cross at the corners, so Start and close buttons keep working", right: _corners, rightWidth: 84));
@@ -242,11 +259,21 @@ sealed class SettingsForm : Form
     void RefreshPcs()
     {
         if (_pcAccess == null || IsDisposed) return;
+        ShowPeerSize();
         var rows = PcList.Rows(_pcAccess.Nearby(), Pairing.All, _pcAccess.Linked,
             fp => Settings.Current.Zones.Any(z => string.Equals(z.Peer, fp, StringComparison.OrdinalIgnoreCase)));
         if (rows.SequenceEqual(_pcs.Current)) return;   // nothing new: leave the layout editor alone
         if (_pcs.Show(rows) && IsHandleCreated) _scroll.LayoutCards();
         if (IsHandleCreated) _layout.Reload();
+    }
+
+    /// <summary>Shows the size of the PC the editor shows (it can change once that PC's monitors arrive).</summary>
+    void ShowPeerSize()
+    {
+        var fp = LayoutEditor.Peer()?.Fingerprint ?? "";
+        if (fp == _sizeFor || _peerSize.ContainsFocus) return;
+        _sizeFor = fp;
+        _peerSize.Text = (fp == "" ? 100 : LayoutEditor.SizeOf(fp)).ToString();
     }
 
     void OnTheirChange()

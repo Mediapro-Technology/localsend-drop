@@ -98,6 +98,8 @@ sealed class Settings
     public CrossingSettings Crossing { get; set; } = new();
     /// <summary>Which monitor edge span leads to which monitor of which PC. Empty = migrate from Paired.Edge on load.</summary>
     public List<Zone> Zones { get; set; } = [];
+    /// <summary>How big each paired PC's screens are drawn in Arrange screens, in percent (missing: 100).</summary>
+    public Dictionary<string, int> PeerSize { get; set; } = [];
     /// <summary>Fingerprints of senders accepted before.</summary>
     public List<string> Trusted { get; set; } = [];
 
