@@ -60,6 +60,7 @@ and update. LocalSend Drop should do everything we use Beamer for, so Beamer can
 - Hiding the system cursor globally (SetSystemCursor) must always be restored, even on crash/exit.
 - Settings sync clock skew between PCs: stamps from different clocks; last-writer may surprise.
 - Media keys: laptop Fn / vendor-driver hotkeys may bypass the hook and act locally (R1, accepted). Verify A10 on the real keyboard.
+- Known limit (review): one shared layout, built for the first paired PC; several paired PCs need per-peer layouts.
 
 ## Cards
 - T-001 Groundwork for layout, sync and tests
@@ -68,3 +69,4 @@ and update. LocalSend Drop should do everything we use Beamer for, so Beamer can
 - T-004 Switch PCs with a shortcut, set speeds
 - T-005 Arrange screens and options, same on both
 - T-006 Edge glow, arrival effect, idle pointer hides
+- T-007 Fixes from the review of the Beamer work

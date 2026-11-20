@@ -1,6 +1,7 @@
 using LocalSendDrop;
 using Xunit;
 
+[Collection("KvmSync")]
 public class KvmSyncTests
 {
     sealed class Rig

@@ -4,6 +4,14 @@
   "recent": [
     {
       "date": "2026-11-20",
+      "id": "T-007",
+      "title": "Fixes from the review of the Beamer work",
+      "notes": [
+        "20261120-131852"
+      ]
+    },
+    {
+      "date": "2026-11-20",
       "id": "T-004",
       "title": "Switch PCs with a shortcut, set speeds",
       "notes": [

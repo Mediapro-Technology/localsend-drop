@@ -30,8 +30,29 @@ record CrossingSettings
     public Stamped<bool> ReverseScroll { get; init; } = D(false);
     public Stamped<Zone[]> Layout { get; init; } = D<Zone[]>([]);
 
-    /// <summary>Per value, whichever side set it last.</summary>
-    public static CrossingSettings Merge(CrossingSettings mine, CrossingSettings theirs) => new()
+    /// <summary>Per value, whichever side set it last. The peer's values are brought into range first.</summary>
+    public static CrossingSettings Merge(CrossingSettings mine, CrossingSettings theirs) => Pick(mine, theirs.Sanitized());
+
+    static double Speed(double v) => double.IsFinite(v) ? Math.Clamp(v, 0.2, 4.0) : 1.0;
+    static bool Span(double a, double b) => double.IsFinite(a) && double.IsFinite(b) && a >= 0 && b <= 1 && a < b;
+
+    /// <summary>The same settings with every value in range and broken zones dropped (a peer's message isn't trusted).</summary>
+    public CrossingSettings Sanitized() => this with
+    {
+        Shortcut = Shortcut with { Value = Shortcut.Value ?? "" },
+        DoubleTapMs = DoubleTapMs with { Value = Math.Clamp(DoubleTapMs.Value, 150, 800) },
+        ResistancePx = ResistancePx with { Value = Math.Clamp(ResistancePx.Value, 0, 2000) },
+        PointerSpeed = PointerSpeed with { Value = Speed(PointerSpeed.Value) },
+        ScrollSpeed = ScrollSpeed with { Value = Speed(ScrollSpeed.Value) },
+        Layout = Layout with
+        {
+            Value = (Layout.Value ?? []).Where(z => z != null && z.Peer != null
+                && Span(z.From, z.To) && Span(z.TargetFrom, z.TargetTo)
+                && Enum.IsDefined(z.Side) && Enum.IsDefined(z.TargetSide)).ToArray(),
+        },
+    };
+
+    static CrossingSettings Pick(CrossingSettings mine, CrossingSettings theirs) => new()
     {
         Shortcut = Stamped<string>.Newer(mine.Shortcut, theirs.Shortcut),
         DoubleTapMs = Stamped<int>.Newer(mine.DoubleTapMs, theirs.DoubleTapMs),

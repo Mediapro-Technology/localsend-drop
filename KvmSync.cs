@@ -43,13 +43,23 @@ static class KvmSync
     /// <summary>A link just came up (either direction): tell them about our monitors and our settings.</summary>
     public static void Hello(Func<byte[], bool> send)
     {
+        // Registered first, so a change made while we say hello still reaches this link.
+        lock (Gate) Links.Add(send);
         try
         {
             send(KvmWire.JsonMsg(KvmMsg.Displays, KvmZones.Current()));
             send(KvmWire.JsonMsg(KvmMsg.Sync, Load()));
-            lock (Gate) Links.Add(send);
         }
         catch { }
+    }
+
+    /// <summary>Our monitors changed: tell every linked PC.</summary>
+    public static void ResendDisplays()
+    {
+        Func<byte[], bool>[] links;
+        lock (Gate) links = [.. Links];
+        var m = KvmWire.JsonMsg(KvmMsg.Displays, KvmZones.Current());
+        foreach (var send in links) try { send(m); } catch { }
     }
 
     /// <summary>Displays and Sync messages from <paramref name="fingerprint"/>.</summary>
@@ -99,7 +109,8 @@ static class KvmSync
         }
         if (changed) { try { SettingsChanged?.Invoke(); } catch { } }
         // Only answer when they are behind; adopting theirs is not re-broadcast, so two PCs settle after one exchange.
-        if (!Same(merged, theirs)) Broadcast(merged);
+        // Compared with their values as we'd accept them, so a peer sending something out of range can't start a ping-pong.
+        if (!Same(merged, theirs.Sanitized())) Broadcast(merged);
     }
 
     static void Broadcast(CrossingSettings settings)

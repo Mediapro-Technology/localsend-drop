@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 
@@ -65,6 +65,7 @@ sealed class Kvm : IDisposable
         Sync();
         Pairing.Changed += Sync;
         KvmSync.SettingsChanged += UpdateEdges;   // a new layout or option, here or from the other PC
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaysChanged;
         KvmLook.IsCrossed = () => CrossedOver;
         KvmLook.IsLive = fp => _links.TryGetValue(fp, out var l) && l.IsConnected;
         KvmRemote.ActiveChanged = on => (_source as HelperClient)?.SetRemoteActive(on);
@@ -163,7 +164,16 @@ sealed class Kvm : IDisposable
     }
 
     /// <summary>Pushed into an offline PC's zone (at most once per 30 s): send it a Wake-on-LAN packet.</summary>
-    void OnWake(Zone zone)
+    void OnWake(Zone zone) => Task.Run(() => Wake(zone));   // hook thread: no file or socket work here
+
+    /// <summary>A monitor was added, removed or moved: new zone geometry here, and tell the linked PCs.</summary>
+    void OnDisplaysChanged(object? sender, EventArgs e)
+    {
+        UpdateEdges();
+        KvmSync.ResendDisplays();
+    }
+
+    void Wake(Zone zone)
     {
         var pc = Pairing.Find(zone.Peer);
         if (pc == null) return;
@@ -502,6 +512,7 @@ sealed class Kvm : IDisposable
     {
         Pairing.Changed -= Sync;
         KvmSync.SettingsChanged -= UpdateEdges;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaysChanged;
         KvmLook.IsCrossed = () => false;
         KvmLook.IsLive = fp => Pairing.All.Any(p => string.Equals(p.Fingerprint, fp, StringComparison.OrdinalIgnoreCase));
         _beat.Dispose();
