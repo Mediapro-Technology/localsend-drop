@@ -14,6 +14,14 @@ sealed class IdleClock
 
     public bool Hidden => _hidden;
 
+    /// <summary>Forget everything (hiding was switched off): counting still starts again from the next tick.</summary>
+    public void Reset()
+    {
+        _started = false;
+        _hidden = false;
+        _movedAt = 0;
+    }
+
     /// <summary>Feed the pointer position every tick. <paramref name="live"/> is whether a paired link is up.</summary>
     public IdleAction Tick(Point pos, bool crossed, long nowMs, bool live = true)
     {
@@ -109,7 +117,10 @@ static class KvmLook
         var s = Settings.Current;
         var pos = Cursor.Position;
         var crossed = IsCrossed();
-        var live = s.Zones.Any(z => IsLive(z.Peer));
+        // The same zones the crossing uses (a pairing without a saved layout has its old edge).
+        var displays = KvmZones.Current();
+        var zones = Pairing.All.SelectMany(p => Kvm.ZonesFor(p, s.Zones, displays)).ToList();
+        var live = zones.Any(z => IsLive(z.Peer));
 
         if (s.Crossing.HideIdle.Value)
         {
@@ -119,16 +130,15 @@ static class KvmLook
                 case IdleAction.Show: HiddenCursor.Show(HiddenCursor.Idle); break;
             }
         }
-        else if (Idle.Hidden)
+        else
         {
-            Idle.Tick(pos, true, Environment.TickCount64);   // settled: forget it
-            HiddenCursor.Show(HiddenCursor.Idle);
+            if (Idle.Hidden) HiddenCursor.Show(HiddenCursor.Idle);
+            Idle.Reset();   // so switching it back on starts counting from then
         }
 
         if (!s.Crossing.Glow.Value || crossed) { _strip?.Fade(null, 0); return; }
-        var displays = KvmZones.Current();
         Zone? best = null; double bestP = 0; Rectangle bestD = default;
-        foreach (var z in s.Zones)
+        foreach (var z in zones)
         {
             if (!IsLive(z.Peer)) continue;
             var d = displays.FirstOrDefault(x => x.Index == z.Display);

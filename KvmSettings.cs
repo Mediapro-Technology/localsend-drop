@@ -31,26 +31,46 @@ record CrossingSettings
     public Stamped<Zone[]> Layout { get; init; } = D<Zone[]>([]);
 
     /// <summary>Per value, whichever side set it last. The peer's values are brought into range first.</summary>
-    public static CrossingSettings Merge(CrossingSettings mine, CrossingSettings theirs) => Pick(mine, theirs.Sanitized());
+    public static CrossingSettings Merge(CrossingSettings mine, CrossingSettings theirs, long? now = null) => Pick(mine, theirs.Sanitized(now));
+
+    /// <summary>How far ahead of our clock a peer's stamp may be (a PC with a fast clock still works).</summary>
+    public const long SlackMs = 24L * 60 * 60 * 1000;
 
     static double Speed(double v) => double.IsFinite(v) ? Math.Clamp(v, 0.2, 4.0) : 1.0;
     static bool Span(double a, double b) => double.IsFinite(a) && double.IsFinite(b) && a >= 0 && b <= 1 && a < b;
 
-    /// <summary>The same settings with every value in range and broken zones dropped (a peer's message isn't trusted).</summary>
-    public CrossingSettings Sanitized() => this with
+    /// <summary>A member from the wire: a missing one is the default, its stamp is in range, <c>By</c> is never null.</summary>
+    static Stamped<T> Fix<T>(Stamped<T>? s, T fallback, Func<T, T> clamp, long latest) =>
+        s == null
+            ? new(fallback, 0, "")
+            : new(s.Value == null ? fallback : clamp(s.Value), Math.Clamp(s.SetAt, 0, latest), s.By ?? "");
+
+    /// <summary>
+    /// The same settings with every value in range, stamps no further ahead than a day, null members replaced
+    /// by defaults and broken zones dropped (a peer's message isn't trusted).
+    /// </summary>
+    public CrossingSettings Sanitized(long? now = null)
     {
-        Shortcut = Shortcut with { Value = Shortcut.Value ?? "" },
-        DoubleTapMs = DoubleTapMs with { Value = Math.Clamp(DoubleTapMs.Value, 150, 800) },
-        ResistancePx = ResistancePx with { Value = Math.Clamp(ResistancePx.Value, 0, 2000) },
-        PointerSpeed = PointerSpeed with { Value = Speed(PointerSpeed.Value) },
-        ScrollSpeed = ScrollSpeed with { Value = Speed(ScrollSpeed.Value) },
-        Layout = Layout with
+        var latest = (now ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) + SlackMs;
+        var d = new CrossingSettings();
+        return new()
         {
-            Value = (Layout.Value ?? []).Where(z => z != null && z.Peer != null
+            Shortcut = Fix(Shortcut, d.Shortcut.Value, v => v, latest),
+            DoubleTapMs = Fix(DoubleTapMs, d.DoubleTapMs.Value, v => Math.Clamp(v, 150, 800), latest),
+            ResistancePx = Fix(ResistancePx, d.ResistancePx.Value, v => Math.Clamp(v, 0, 2000), latest),
+            Corners = Fix(Corners, d.Corners.Value, v => v, latest),
+            Notch = Fix(Notch, d.Notch.Value, v => v, latest),
+            Glow = Fix(Glow, d.Glow.Value, v => v, latest),
+            Arrival = Fix(Arrival, d.Arrival.Value, v => v, latest),
+            HideIdle = Fix(HideIdle, d.HideIdle.Value, v => v, latest),
+            PointerSpeed = Fix(PointerSpeed, d.PointerSpeed.Value, Speed, latest),
+            ScrollSpeed = Fix(ScrollSpeed, d.ScrollSpeed.Value, Speed, latest),
+            ReverseScroll = Fix(ReverseScroll, d.ReverseScroll.Value, v => v, latest),
+            Layout = Fix(Layout, d.Layout.Value, zones => zones.Where(z => z != null && z.Peer != null
                 && Span(z.From, z.To) && Span(z.TargetFrom, z.TargetTo)
-                && Enum.IsDefined(z.Side) && Enum.IsDefined(z.TargetSide)).ToArray(),
-        },
-    };
+                && Enum.IsDefined(z.Side) && Enum.IsDefined(z.TargetSide)).ToArray(), latest),
+        };
+    }
 
     static CrossingSettings Pick(CrossingSettings mine, CrossingSettings theirs) => new()
     {

@@ -112,7 +112,7 @@ public class KvmSyncTests
     {
         var z = new Zone(0, Edge.Right, 0.25, 0.75, "x", 1, Edge.Left, 0, 0.5);
         var mine = KvmSync.LocalZones(new Stamped<Zone[]>([z], 1, "ME"), "ME", "peer");
-        Assert.Equal([z], mine);
+        Assert.Equal([z with { Peer = "peer" }], mine);   // the peer is always the link's fingerprint
         var theirs = KvmSync.LocalZones(new Stamped<Zone[]>([z], 1, "THEM"), "ME", "peer");
         Assert.Equal(new Zone(1, Edge.Left, 0, 0.5, "peer", 0, Edge.Right, 0.25, 0.75), Assert.Single(theirs));
     }

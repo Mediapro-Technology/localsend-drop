@@ -70,3 +70,4 @@ and update. LocalSend Drop should do everything we use Beamer for, so Beamer can
 - T-005 Arrange screens and options, same on both
 - T-006 Edge glow, arrival effect, idle pointer hides
 - T-007 Fixes from the review of the Beamer work
+- T-008 Settings apply at once, crossing lands right

@@ -4,6 +4,14 @@
   "recent": [
     {
       "date": "2026-11-20",
+      "id": "T-008",
+      "title": "Settings apply at once, crossing lands right",
+      "notes": [
+        "20261120-132848"
+      ]
+    },
+    {
+      "date": "2026-11-20",
       "id": "T-007",
       "title": "Fixes from the review of the Beamer work",
       "notes": [
@@ -64,5 +72,9 @@
       ]
     }
   ],
-  "reviewed": null
+  "reviewed": "02cf4b1",
+  "secured": {
+    "sha": "02cf4b1",
+    "date": "2026-11-20"
+  }
 }

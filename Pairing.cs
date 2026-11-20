@@ -67,10 +67,27 @@ static class Pairing
         Edge.Left => "on the left", Edge.Right => "on the right", Edge.Top => "above", _ => "below",
     };
 
+    /// <summary>A PC's saved zones, gone: crossing to it falls back to its pairing edge until a layout is saved again.</summary>
+    internal static void ForgetZones(Settings s, string fingerprint) =>
+        s.Zones.RemoveAll(z => string.Equals(z.Peer, fingerprint, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Before saving a pairing on <paramref name="edge"/>: zones that no longer match it go. That is this PC's
+    /// zones if its edge moved, and those of a PC it replaces on that edge.
+    /// </summary>
+    internal static void DropZonesForSave(Settings s, string fingerprint, Edge edge)
+    {
+        if (s.Paired.FirstOrDefault(p => string.Equals(p.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase)) is { } old && old.Edge != edge)
+            ForgetZones(s, fingerprint);
+        foreach (var replaced in s.Paired.Where(p => p.Edge == edge && !string.Equals(p.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase)))
+            ForgetZones(s, replaced.Fingerprint);
+    }
+
     /// <summary>UI thread.</summary>
     public static void Save(string fingerprint, string alias, Edge edge)
     {
         var s = Settings.Current;
+        DropZonesForSave(s, fingerprint, edge);
         s.Paired.RemoveAll(p => string.Equals(p.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase));
         // One PC per edge: pairing a new one on the same side replaces the old.
         s.Paired.RemoveAll(p => p.Edge == edge);
@@ -85,6 +102,7 @@ static class Pairing
     {
         var s = Settings.Current;
         if (s.Paired.RemoveAll(p => string.Equals(p.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase)) == 0) return;
+        ForgetZones(s, fingerprint);
         s.Save();
         _snapshot = [.. s.Paired];
         Changed?.Invoke();
