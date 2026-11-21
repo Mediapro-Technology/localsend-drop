@@ -1,13 +1,13 @@
 # STATE — localsend-drop
-Focus: All cards · 15/15 done · all cards done — next: /lean:review, then /lean:grill the next phase
+Focus: S-001 One mouse and keyboard across PCs, without Beamer · 12/12 done · all cards done — next: /lean:review, then /lean:grill the next phase
 Now: —
 Ready: —
 Recent:
+  - 2026-11-21 T-016 Shortcut crossing no longer bounces straight back
   - 2026-11-20 T-015  @5b34712
   - 2026-11-20 T-014  @225e3db
   - 2026-11-20 T-013  @9f443ae
   - 2026-11-20 T-012  @73be8e9
-  - 2026-11-20 T-011 Going back needs a real push, not a wobble @50f0b04
 Last review: 4e0d91b
 Last security review: 5b34712 (2026-11-20)
 

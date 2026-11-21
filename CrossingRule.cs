@@ -43,6 +43,13 @@ static class CrossingRule
         return hit;
     }
 
+    /// <summary>
+    /// Where forwarded moves are measured from once crossed: the hook's own event point for an edge crossing,
+    /// else (the shortcut, which crosses "at" a point on the edge) where the pointer really is. A made-up point
+    /// here turns the next real move into a jump of hundreds of px over there, which sends the pointer straight back.
+    /// </summary>
+    public static Point Baseline(Point at, bool fromHook, Point cursor) => fromHook ? at : cursor;
+
     /// <summary>How far a move goes outward through <paramref name="side"/>.</summary>
     public static int Outward(Edge side, Point delta) => Math.Max(0, side switch
     {
@@ -98,6 +105,11 @@ static class CrossingRule
 sealed class ReturnPush
 {
     public const int GraceMs = 300, GracePx = 4, LeakPxPerSec = 300, LeakAfterMs = 150;
+
+    /// <summary>The most one move counts toward going back: a jump (a stale baseline over there) isn't a push.</summary>
+    public const int MaxStepPx = 50;
+
+    public static int Clip(int outward) => Math.Min(outward, MaxStepPx);
     double _push;
     long _lastPush, _lastStep, _arrived;
     bool _settled;

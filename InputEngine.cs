@@ -103,16 +103,20 @@ sealed class InputEngine : IInputSource
     public void Cross(Zone zone, Point p)
     {
         if (_captured) return;
-        Capture(zone, p);
+        Point cursor;
+        try { cursor = Inject.CursorPos; } catch { cursor = p; }
+        Capture(zone, p, CrossingRule.Baseline(p, fromHook: false, cursor));
     }
 
     public void HoldLeftUp(bool on) => _holdUp = on;
 
-    void Capture(Zone zone, Point p)
+    void Capture(Zone zone, Point p) => Capture(zone, p, CrossingRule.Baseline(p, fromHook: true, p));
+
+    void Capture(Zone zone, Point p, Point baseline)
     {
         _cross = _cross with { Pinned = null, Overshoot = 0 };
         lock (_remoteDown) _remoteDown.Clear();
-        _last = p;
+        _last = baseline;
         _lastPoint = p;
         _capturedTicks = Stopwatch.GetTimestamp();
         _strayChecks = 0;

@@ -197,7 +197,7 @@ static class KvmRemote
             var holding = leave != null && leftHeld && _incoming == null ? StripHolding() : null;
             var plain = Math.Max(LeavePush, Settings.Current.Crossing.ResistancePx.Value);
             var needed = leave != null && leftHeld && _incoming == null && holding == null ? Math.Max(DragPush, plain) : plain;
-            var goBack = _back.Step(here != null ? outward : 0, inward, moved, Environment.TickCount64, needed);
+            var goBack = _back.Step(here != null ? ReturnPush.Clip(outward) : 0, inward, moved, Environment.TickCount64, needed);
             if (leave != null && here != null && outward > 0)
             {
                 if (goBack)
@@ -453,9 +453,10 @@ static class KvmTest
             Check(Next(KvmMsg.Leave, 200) == null, "a small wobble past the edge doesn't send it back");
             Thread.Sleep(300);
             var resist = Math.Max(40, Settings.Current.Crossing.ResistancePx.Value);
-            pipe.Send(KvmWire.Move(-(resist - 10), 0));
+            // In steps, as a real push comes: one move counts at most ReturnPush.MaxStepPx.
+            for (var left = resist - 10; left > 0; left -= 20) pipe.Send(KvmWire.Move(-Math.Min(20, left), 0));
             Check(Next(KvmMsg.Leave, 200) == null, "less than the crossing resistance doesn't send it back");
-            pipe.Send(KvmWire.Move(-30, 0));
+            pipe.Send(KvmWire.Move(-40, 0));   // well past it, after the leak of the 200 ms wait
             var leave = Next(KvmMsg.Leave, 1000);
             Check(leave != null && Math.Abs(KvmWire.ReadFraction(leave) - 0.5) < 0.01, "pushing past the facing edge sends Leave at the same height");
 
