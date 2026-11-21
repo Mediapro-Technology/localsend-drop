@@ -86,13 +86,17 @@ sealed class Discovery(Identity id) : IDisposable
         });
     }
 
+    int _rejoinPending;   // a burst of network events (a flapping adapter) makes one rejoin, not one each
+
     void OnNetworkChanged(object? sender, EventArgs e)
     {
-        if (_udp is { } udp) _ = Task.Run(async () =>
+        if (_udp is not { } udp || Interlocked.Exchange(ref _rejoinPending, 1) == 1) return;
+        _ = Task.Run(async () =>
         {
             try
             {
                 await Task.Delay(2000, _stop.Token).ConfigureAwait(false);   // let the new address settle
+                Volatile.Write(ref _rejoinPending, 0);   // events from here on start a new round
                 Rejoin(udp, Group, LocalIPv4());
                 await AnnounceAsync();
             }
