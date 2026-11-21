@@ -4,6 +4,12 @@
   "recent": [
     {
       "date": "2026-11-21",
+      "id": "T-018",
+      "title": "PCs keep hearing each other after Wi-Fi reconnects",
+      "notes": []
+    },
+    {
+      "date": "2026-11-21",
       "id": "T-017",
       "title": "Pushing the screen edge crosses over again",
       "notes": [
@@ -53,14 +59,6 @@
       "id": "T-009",
       "title": "Settings lists nearby PCs to pair with",
       "notes": []
-    },
-    {
-      "date": "2026-11-20",
-      "id": "T-008",
-      "title": "Settings apply at once, crossing lands right",
-      "notes": [
-        "20261120-132848"
-      ]
     }
   ],
   "reviewed": "4e0d91b",

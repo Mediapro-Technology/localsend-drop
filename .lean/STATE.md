@@ -1,13 +1,13 @@
 # STATE — localsend-drop
-Focus: S-001 One mouse and keyboard across PCs, without Beamer · 13/13 done · all cards done — next: /lean:review, then /lean:grill the next phase
+Focus: S-001 One mouse and keyboard across PCs, without Beamer · 14/14 done · all cards done — next: /lean:review, then /lean:grill the next phase
 Now: —
 Ready: —
 Recent:
+  - 2026-11-21 T-018 PCs keep hearing each other after Wi-Fi reconnects
   - 2026-11-21 T-017 Pushing the screen edge crosses over again @363d637 zk:20261121-110434
   - 2026-11-21 T-016 Shortcut crossing no longer bounces straight back @f9abe0f
   - 2026-11-20 T-015  @5b34712
   - 2026-11-20 T-014  @225e3db
-  - 2026-11-20 T-013  @9f443ae
 Last review: 4e0d91b
 Last security review: 363d637 (2026-11-21)
 

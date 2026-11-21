@@ -36,6 +36,7 @@ sealed class Discovery(Identity id) : IDisposable
         {
             while (!_stop.IsCancellationRequested)
             {
+                if (_udp is { } udp) Rejoin(udp, Group, LocalIPv4());
                 await AnnounceAsync();
                 await Task.Delay(TimeSpan.FromMinutes(5), _stop.Token).ConfigureAwait(false);
             }
@@ -65,11 +66,12 @@ sealed class Discovery(Identity id) : IDisposable
         // LocalSend on this PC also binds 53317 with SO_REUSEADDR, so we can share it.
         udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         udp.Client.Bind(new IPEndPoint(IPAddress.Any, MulticastPort));
-        foreach (var ip in LocalIPv4())
-        {
-            try { udp.JoinMulticastGroup(Group, ip); } catch (SocketException) { }
-        }
+        Rejoin(udp, Group, LocalIPv4());
         _udp = udp;
+        // Wi-Fi reconnecting (sleep, roaming) loses the membership: without it this PC stops hearing
+        // announcements, while its own still go out, so others see it only when it announces itself.
+        NetworkChange.NetworkAddressChanged += OnNetworkChanged;
+        NetworkChange.NetworkAvailabilityChanged += OnNetworkChanged;
 
         _ = Task.Run(async () =>
         {
@@ -82,6 +84,32 @@ sealed class Discovery(Identity id) : IDisposable
                 OnDatagram(r.Buffer, r.RemoteEndPoint.Address);
             }
         });
+    }
+
+    void OnNetworkChanged(object? sender, EventArgs e)
+    {
+        if (_udp is { } udp) _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(2000, _stop.Token).ConfigureAwait(false);   // let the new address settle
+                Rejoin(udp, Group, LocalIPv4());
+                await AnnounceAsync();
+            }
+            catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException) { }   // closing
+        });
+    }
+
+    /// <summary>Joins the group afresh on each interface (dropped first, so a stale membership is renewed). How many joined.</summary>
+    internal static int Rejoin(UdpClient udp, IPAddress group, IEnumerable<IPAddress> ips)
+    {
+        var joined = 0;
+        foreach (var ip in ips)
+        {
+            try { udp.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.DropMembership, new MulticastOption(group, ip)); } catch (Exception e) when (e is SocketException or ObjectDisposedException) { }
+            try { udp.JoinMulticastGroup(group, ip); joined++; } catch (Exception e) when (e is SocketException or ObjectDisposedException) { }
+        }
+        return joined;
     }
 
     void OnDatagram(byte[] data, IPAddress from)
@@ -165,6 +193,8 @@ sealed class Discovery(Identity id) : IDisposable
     public void Dispose()
     {
         _stop.Cancel();
+        NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
+        NetworkChange.NetworkAvailabilityChanged -= OnNetworkChanged;
         _udp?.Dispose();
     }
 }
