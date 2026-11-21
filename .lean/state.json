@@ -4,6 +4,14 @@
   "recent": [
     {
       "date": "2026-11-21",
+      "id": "T-017",
+      "title": "Pushing the screen edge crosses over again",
+      "notes": [
+        "20261121-110434"
+      ]
+    },
+    {
+      "date": "2026-11-21",
       "id": "T-016",
       "title": "Shortcut crossing no longer bounces straight back",
       "notes": []
@@ -52,14 +60,6 @@
       "title": "Settings apply at once, crossing lands right",
       "notes": [
         "20261120-132848"
-      ]
-    },
-    {
-      "date": "2026-11-20",
-      "id": "T-007",
-      "title": "Fixes from the review of the Beamer work",
-      "notes": [
-        "20261120-131852"
       ]
     }
   ],

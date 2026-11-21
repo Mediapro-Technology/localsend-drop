@@ -50,6 +50,27 @@ static class CrossingRule
     /// </summary>
     public static Point Baseline(Point at, bool fromHook, Point cursor) => fromHook ? at : cursor;
 
+    /// <summary>
+    /// Where the pointer really ends up. The low-level hook reports where a move would take it, before Windows
+    /// clips it to the screens: pushing past the left edge reports X = -5. Off every monitor, it stays on the one
+    /// it was on (clamped), so the edge it's pushing against is still found.
+    /// </summary>
+    public static Point OnScreen(Point raw, Point last, IReadOnlyList<DisplayInfo> displays)
+    {
+        if (displays.Count == 0 || displays.Any(d => d.Bounds.Contains(raw))) return raw;
+        var on = displays.FirstOrDefault(d => d.Bounds.Contains(last))
+            ?? displays.OrderBy(d => Distance(d.Bounds, raw)).First();
+        var b = on.Bounds;
+        return new Point(Math.Clamp(raw.X, b.Left, b.Right - 1), Math.Clamp(raw.Y, b.Top, b.Bottom - 1));
+    }
+
+    static long Distance(Rectangle r, Point p)
+    {
+        long dx = Math.Max(0, Math.Max(r.Left - p.X, p.X - (r.Right - 1)));
+        long dy = Math.Max(0, Math.Max(r.Top - p.Y, p.Y - (r.Bottom - 1)));
+        return dx * dx + dy * dy;
+    }
+
     /// <summary>How far a move goes outward through <paramref name="side"/>.</summary>
     public static int Outward(Edge side, Point delta) => Math.Max(0, side switch
     {

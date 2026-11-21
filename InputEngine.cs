@@ -179,10 +179,12 @@ sealed class InputEngine : IInputSource
         return false;
     }
 
-    void CheckEdge(Point p)
+    void CheckEdge(Point raw)
     {
         var zones = _zones;
-        var delta = StepDelta(_lastPoint, p, _cross.Pinned?.Side);
+        // The push is how far it tried to go (raw); the edge check is where Windows really puts it (clipped).
+        var delta = StepDelta(_lastPoint, raw, _cross.Pinned?.Side);
+        var p = CrossingRule.OnScreen(raw, _lastPoint, _displays);
         _lastPoint = p;
         if (zones.Live.Count == 0 && zones.Offline.Count == 0) { _cross = _cross with { Pinned = null, Overshoot = 0 }; return; }
         var now = Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency;
