@@ -18,6 +18,17 @@ sealed class IncomingCard : Form
     Rectangle _close;
     bool _closeHot;
 
+    // A received message: shown in a read-only box so it can be selected, plus a copy icon.
+    readonly TextBox _message = new()
+    {
+        ReadOnly = true, Multiline = true, WordWrap = true, BorderStyle = BorderStyle.None,
+        TabStop = false, Visible = false,
+    };
+    readonly System.Windows.Forms.Timer _copiedTimer = new() { Interval = 1500 };
+    string? _copyText;
+    Rectangle _copy;
+    bool _copyHot, _copied;
+
     // what's painted
     string _title = "", _caption = "";
     List<string> _lines = [];
@@ -49,9 +60,13 @@ sealed class IncomingCard : Form
         var onTop = new System.Windows.Forms.Timer { Interval = 2000 };
         onTop.Tick += (_, _) => { if (IsHandleCreated && Visible) Ui.KeepOnTop(Handle); };
         onTop.Start();
-        Controls.AddRange([_primary, _secondary]);
-        Ui.OnChange(this, () => { BackColor = Ui.Flyout; Ui.Chrome(Handle); Invalidate(true); });
+        Controls.AddRange([_primary, _secondary, _message]);
+        // The card never takes focus by itself; clicking the text activates it so Ctrl+C works.
+        _message.MouseDown += (_, _) => { if (!ContainsFocus) { Activate(); _message.Focus(); } };
+        _copiedTimer.Tick += (_, _) => { _copiedTimer.Stop(); _copied = false; Invalidate(_copy); };
+        Ui.OnChange(this, () => { BackColor = Ui.Flyout; ThemeMessage(); Ui.Chrome(Handle); Invalidate(true); });
         BackColor = Ui.Flyout;
+        ThemeMessage();
     }
 
     protected override CreateParams CreateParams
@@ -75,7 +90,19 @@ sealed class IncomingCard : Form
 
     int S(int v) => LogicalToDeviceUnits(v);
 
-    const int W = 364, Pad = 16, HeaderH = 40, LineH = 20, ThumbH = 72;
+    void ThemeMessage()
+    {
+        // A TextBox can't be see-through, so on Glass it sits in a solid bubble instead.
+        _message.BackColor = Glass ? Ui.Solid(Ui.Card) : Ui.Flyout;
+        _message.ForeColor = Ui.TextSecondary;
+        _message.Font = Ui.Body;
+        if (_message.IsHandleCreated) Ui.ThemeScrollbars(_message);
+    }
+
+    static bool Glass => Ui.Style == Ui.Look.Glass;
+    Size BubbleInset => Glass ? new Size(S(10), S(6)) : Size.Empty;
+
+    const int W = 364, Pad = 16, HeaderH = 40, LineH = 20, ThumbH = 72, CopyW = 32, MaxMessageLines = 6;
 
     /// <summary>Lays out the card for the current state and shows it.</summary>
     void Arrange(string? primary, string? secondary)
@@ -85,6 +112,25 @@ sealed class IncomingCard : Form
         var y = S(HeaderH) + S(22);                       // title
         if (_thumbs.Count > 0) y += S(ThumbH + 8);
         y += _lines.Count * S(LineH);
+        _message.Visible = _copyText != null;
+        _copy = Rectangle.Empty;
+        if (_copyText != null)
+        {
+            // Room for the text, wrapped, up to MaxMessageLines; it scrolls past that.
+            var inset = BubbleInset;
+            var tw = w - 2 * pad - S(CopyW + 8) - 2 * inset.Width;
+            var lineH = _message.Font.Height;
+            var need = TextRenderer.MeasureText(_copyText.Length > 0 ? _copyText : " ", _message.Font,
+                new Size(tw, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix).Height;
+            var lines = Math.Max(1, (need + lineH - 1) / lineH);
+            var th = Math.Min(lines, MaxMessageLines) * lineH;
+            _message.ScrollBars = lines > MaxMessageLines ? ScrollBars.Vertical : ScrollBars.None;
+            _message.SetBounds(pad + inset.Width, y + S(2) + inset.Height, tw, th);
+            _message.Text = _copyText.Replace("\r\n", "\n").Replace("\n", "\r\n");
+            _message.Select(0, 0);
+            _copy = new Rectangle(w - pad - S(CopyW), y, S(CopyW), S(CopyW));
+            y += Math.Max(th + S(4) + 2 * inset.Height, S(CopyW));
+        }
         if (_caption.Length > 0) y += S(LineH);
         if (_fraction >= 0) y += S(16);
         y += S(16);
@@ -166,6 +212,14 @@ sealed class IncomingCard : Form
             Ui.DrawText(g, line, Ui.Body, new Rectangle(pad, y, w - 2 * pad, S(LineH)), Ui.TextSecondary);
             y += S(LineH);
         }
+        if (_copyText != null)
+        {
+            if (Glass)
+                Ui.FillRound(g, _message.BackColor, Rectangle.Inflate(_message.Bounds, BubbleInset.Width, BubbleInset.Height), S(4));
+            if (_copyHot) Ui.FillRound(g, Ui.SubtleHover, _copy, S(4));
+            Ui.DrawIcon(g, _copied ? Ui.GlyphCheck : Ui.GlyphCopy, 11f, _copy, _copied ? Ui.Success : Ui.TextSecondary);
+            y = Math.Max(_message.Bottom + S(2) + BubbleInset.Height, _copy.Bottom);
+        }
         if (_caption.Length > 0)
         {
             Ui.DrawText(g, _caption, Ui.Caption, new Rectangle(pad, y, w - 2 * pad, S(LineH)),
@@ -180,18 +234,31 @@ sealed class IncomingCard : Form
         base.OnMouseMove(e);
         var hot = _close.Contains(e.Location);
         if (hot != _closeHot) { _closeHot = hot; Invalidate(_close); }
+        var copyHot = _copyText != null && _copy.Contains(e.Location);
+        if (copyHot != _copyHot) { _copyHot = copyHot; Invalidate(_copy); }
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
         if (_closeHot) { _closeHot = false; Invalidate(_close); }
+        if (_copyHot) { _copyHot = false; Invalidate(_copy); }
     }
 
     protected override void OnMouseClick(MouseEventArgs e)
     {
         base.OnMouseClick(e);
         if (_close.Contains(e.Location)) (_onClose ?? Hide)();
+        else if (_copyText != null && _copy.Contains(e.Location))
+        {
+            if (_copyText.Length == 0) return;
+            try { Clipboard.SetText(_copyText); } catch (System.Runtime.InteropServices.ExternalException) { return; }
+            _copied = true;
+            _copiedTimer.Stop();
+            _copiedTimer.Start();
+            _autoHide.Stop();
+            Invalidate(_copy);
+        }
     }
 
     void HideAfter(int ms) { _autoHide.Interval = ms; _autoHide.Start(); }
@@ -215,6 +282,9 @@ sealed class IncomingCard : Form
         _lines = [];
         _caption = "";
         _onClose = null;
+        _copyText = null;
+        _copied = _copyHot = false;
+        _copiedTimer.Stop();
     }
 
     // ---- states ----
@@ -322,7 +392,7 @@ sealed class IncomingCard : Form
             return;
         }
         _title = $"Message from {alias}";
-        _lines = text.Replace("\r", "").Split('\n').Take(6).ToList();
+        _copyText = text;
         Arrange("Reply", "Copy");
         _onPrimary = () => { Hide(); Reply?.Invoke(fingerprint, alias); };
         _onSecondary = () => { Clipboard.SetText(text); Hide(); };

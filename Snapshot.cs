@@ -124,6 +124,8 @@ static class Snapshot
                 Save(card, Path.Combine(folder, $"card-request-{mode}.png"));
                 card.OnMessage("HARSHID-PC", "A1", "https://www.mediaproav.com/projects/adipec");
                 Save(card, Path.Combine(folder, $"card-link-{mode}.png"));
+                card.OnMessage("HARSHID-PC", "A1", "Meeting moved to 3 pm, room B. Bring the floor plan v3 and the site survey photos please.");
+                Save(card, Path.Combine(folder, $"card-message-{mode}.png"));
             }
 
             if (Notes.For("A1").Count == 0)

@@ -157,7 +157,61 @@ sealed class MessagesView : Drawn
     int _scroll;      // pixels scrolled up from the bottom
     int _contentH;
 
-    public MessagesView(string fingerprint) => _fingerprint = fingerprint;
+    // Where each bubble was last painted, so hovering one shows a copy icon beside it.
+    readonly List<(Note Note, Rectangle Bubble, Rectangle Copy)> _shown = [];
+    Note? _hot, _copied;
+    bool _copyHot;
+    readonly System.Windows.Forms.Timer _copiedTimer = new() { Interval = 1500 };
+
+    public MessagesView(string fingerprint)
+    {
+        _fingerprint = fingerprint;
+        _copiedTimer.Tick += (_, _) => { _copiedTimer.Stop(); _copied = null; Invalidate(); };
+        var menu = Ui.Menu();
+        menu.Items.Add("Copy", null, (_, _) => { if (menu.Tag is Note n) CopyNote(n); });
+        MouseUp += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Right || At(e.Location) is not { } n) return;
+            menu.Tag = n;
+            menu.Show(this, e.Location);
+        };
+    }
+
+    Note? At(Point p) => _shown.FirstOrDefault(s => s.Bubble.Contains(p) || s.Copy.Contains(p)).Note;
+
+    void CopyNote(Note n)
+    {
+        if (string.IsNullOrEmpty(n.Text)) return;
+        try { Clipboard.SetText(n.Text); } catch (System.Runtime.InteropServices.ExternalException) { return; }
+        _copied = n;
+        _copiedTimer.Stop();
+        _copiedTimer.Start();
+        Invalidate();
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        var hot = At(e.Location);
+        var copyHot = hot != null && _shown.First(s => s.Note == hot).Copy.Contains(e.Location);
+        if (hot != _hot || copyHot != _copyHot) { _hot = hot; _copyHot = copyHot; Invalidate(); }
+        Cursor = copyHot ? Cursors.Hand : Cursors.Default;
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        _hot = null;
+        _copyHot = false;
+        Invalidate();
+    }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (e.Button == MouseButtons.Left && At(e.Location) is { } n && _shown.First(s => s.Note == n).Copy.Contains(e.Location))
+            CopyNote(n);
+    }
 
     public void Reload()
     {
@@ -179,6 +233,7 @@ sealed class MessagesView : Drawn
     {
         var g = e.Graphics;
         g.Clear(Ui.Base);
+        _shown.Clear();
         int pad = S(16), maxW = (int)(Width * 0.75), gap = S(6);
         const TextFormatFlags wrap = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl;
 
@@ -213,6 +268,15 @@ sealed class MessagesView : Drawn
             var b = bubble; b.Offset(0, offset);
             var t = text; t.Offset(0, offset);
             if (b.Bottom < 0 || b.Top > Height) continue;
+            // Copy icon on the open side of the bubble, shown while it's hovered.
+            var cs = S(28);
+            var copy = new Rectangle(n.FromMe ? b.Left - S(4) - cs : b.Right + S(4), b.Top + (Math.Min(b.Height, S(40)) - cs) / 2, cs, cs);
+            _shown.Add((n, b, copy));
+            if (n == _hot || n == _copied)
+            {
+                if (n == _hot && _copyHot) Ui.FillRound(g, Ui.SubtleHover, copy, S(4));
+                Ui.DrawIcon(g, n == _copied ? Ui.GlyphCheck : Ui.GlyphCopy, 10f, copy, n == _copied ? Ui.Success : Ui.TextSecondary);
+            }
             if (n.FromMe) Ui.FillRound(g, n.Failed ? Ui.ControlStroke : Ui.Accent, b, S(8));
             else
             {
