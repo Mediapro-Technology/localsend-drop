@@ -2,10 +2,12 @@
 id: T-019
 title: Received messages can be selected and copied
 spec: none
-status: doing
+status: done
 depends: []
 files: [IncomingCard.cs, NotesForm.cs, Theme.cs, Snapshot.cs]
 tdd: none
+done: 2026-11-25
+no_tests: UI-only: WinForms TextBox selection and painted copy icon; verified with --snapshot renders in all 3 looks
 ---
 ## Goal
 A message from another PC was painted onto the card, so its text couldn't be selected.

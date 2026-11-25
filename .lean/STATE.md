@@ -1,13 +1,13 @@
 # STATE — localsend-drop
-Focus: S-001 One mouse and keyboard across PCs, without Beamer · 14/14 done · all cards done — next: /lean:review, then /lean:grill the next phase
+Focus: NONE · 1/1 done · all cards done — next: /lean:review, then /lean:grill the next phase
 Now: —
 Ready: —
 Recent:
+  - 2026-11-25 T-019 Received messages can be selected and copied @923cd17
   - 2026-11-21 T-018 PCs keep hearing each other after Wi-Fi reconnects @ef8ebaf
   - 2026-11-21 T-017 Pushing the screen edge crosses over again @363d637 zk:20261121-110434
   - 2026-11-21 T-016 Shortcut crossing no longer bounces straight back @f9abe0f
   - 2026-11-20 T-015  @5b34712
-  - 2026-11-20 T-014  @225e3db
 Last review: 4e0d91b
 Last security review: ef8ebaf (2026-11-21)
 

@@ -3,6 +3,12 @@
   "blockers": [],
   "recent": [
     {
+      "date": "2026-11-25",
+      "id": "T-019",
+      "title": "Received messages can be selected and copied",
+      "notes": []
+    },
+    {
       "date": "2026-11-21",
       "id": "T-018",
       "title": "PCs keep hearing each other after Wi-Fi reconnects",
@@ -52,12 +58,6 @@
       "date": "2026-11-20",
       "id": "T-010",
       "title": "A smaller screen beside a bigger one uses the whole edge",
-      "notes": []
-    },
-    {
-      "date": "2026-11-20",
-      "id": "T-009",
-      "title": "Settings lists nearby PCs to pair with",
       "notes": []
     }
   ],
